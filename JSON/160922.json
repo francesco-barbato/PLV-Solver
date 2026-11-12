@@ -1,0 +1,122 @@
+{
+  "nodes": [
+    {
+      "id": 1,
+      "x": 0.25,
+      "y": 0.0
+    },
+    {
+      "id": 2,
+      "x": 0.25,
+      "y": 0.5
+    },
+    {
+      "id": 3,
+      "x": 0.0,
+      "y": 0.75
+    },
+    {
+      "id": 4,
+      "x": 1.0,
+      "y": 0.75
+    },
+    {
+      "id": 5,
+      "x": 0.75,
+      "y": 0.5
+    },
+    {
+      "id": 6,
+      "x": 0.75,
+      "y": 0.0
+    }
+  ],
+  "elements": [
+    {
+      "id": 1,
+      "n1": 1,
+      "n2": 2
+    },
+    {
+      "id": 2,
+      "n1": 2,
+      "n2": 3
+    },
+    {
+      "id": 3,
+      "n1": 3,
+      "n2": 4
+    },
+    {
+      "id": 4,
+      "n1": 4,
+      "n2": 5
+    },
+    {
+      "id": 5,
+      "n1": 5,
+      "n2": 6
+    }
+  ],
+  "supports": [
+    {
+      "node_id": 1,
+      "fix_u": true,
+      "fix_v": true,
+      "fix_w": true,
+      "angle": 0.0
+    },
+    {
+      "node_id": 6,
+      "fix_u": true,
+      "fix_v": true,
+      "fix_w": true,
+      "angle": 0.0
+    }
+  ],
+  "point_loads": [
+    {
+      "node_id": 2,
+      "Fx": 500.0,
+      "Fy": 0.0,
+      "M": 0.0
+    },
+    {
+      "node_id": 5,
+      "Fx": -500.0,
+      "Fy": 0.0,
+      "M": 0.0
+    }
+  ],
+  "element_loads": [
+    {
+      "elem_id": 3,
+      "tipo": "costante",
+      "q_trans": 2000.0
+    }
+  ],
+  "thermal_loads": [],
+  "material": {
+    "E": 205000000000.0,
+    "sigma_amm": 240000000.0,
+    "MS_target": 0.0,
+    "MS_operator": ">",
+    "MS_design_target": 1.0,
+    "MS_design_operator": ">",
+    "verification_type": "bending_only"
+  },
+  "section": {
+    "b": 0.10000000000000002,
+    "h": 0.18,
+    "design": "ratio",
+    "ratio": 1.8
+  },
+  "internal_hinges": [
+    {
+      "node_id": 3
+    },
+    {
+      "node_id": 4
+    }
+  ]
+}

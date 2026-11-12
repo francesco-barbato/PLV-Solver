@@ -1,0 +1,154 @@
+{
+  "nodes": [
+    {
+      "id": 1,
+      "x": 0.0,
+      "y": 1.0
+    },
+    {
+      "id": 2,
+      "x": 1.5,
+      "y": 1.0
+    },
+    {
+      "id": 3,
+      "x": 2.0,
+      "y": 1.0
+    },
+    {
+      "id": 4,
+      "x": 2.5,
+      "y": 1.0
+    },
+    {
+      "id": 5,
+      "x": 3.0,
+      "y": 1.0
+    },
+    {
+      "id": 6,
+      "x": 3.0,
+      "y": 0.5
+    },
+    {
+      "id": 7,
+      "x": 3.0,
+      "y": 0.0
+    },
+    {
+      "id": 8,
+      "x": 2.0,
+      "y": 0.0
+    }
+  ],
+  "elements": [
+    {
+      "id": 1,
+      "n1": 1,
+      "n2": 2
+    },
+    {
+      "id": 2,
+      "n1": 2,
+      "n2": 3
+    },
+    {
+      "id": 3,
+      "n1": 3,
+      "n2": 4
+    },
+    {
+      "id": 4,
+      "n1": 4,
+      "n2": 5
+    },
+    {
+      "id": 5,
+      "n1": 5,
+      "n2": 6
+    },
+    {
+      "id": 6,
+      "n1": 6,
+      "n2": 7
+    },
+    {
+      "id": 7,
+      "n1": 7,
+      "n2": 8
+    }
+  ],
+  "supports": [
+    {
+      "node_id": 1,
+      "fix_u": false,
+      "fix_v": true,
+      "fix_w": false,
+      "angle": 0.0
+    },
+    {
+      "node_id": 3,
+      "fix_u": false,
+      "fix_v": true,
+      "fix_w": false,
+      "angle": 0.0
+    },
+    {
+      "node_id": 7,
+      "fix_u": false,
+      "fix_v": false,
+      "fix_w": false,
+      "angle": 225.0,
+      "rotated_roller": true
+    },
+    {
+      "node_id": 8,
+      "fix_u": true,
+      "fix_v": true,
+      "fix_w": false,
+      "angle": 0.0
+    }
+  ],
+  "point_loads": [
+    {
+      "node_id": 4,
+      "Fx": 0.0,
+      "Fy": 0.0,
+      "M": 500.0
+    },
+    {
+      "node_id": 6,
+      "Fx": 1000.0,
+      "Fy": 0.0,
+      "M": 0.0
+    }
+  ],
+  "element_loads": [
+    {
+      "elem_id": 1,
+      "tipo": "costante",
+      "q_trans": 1000.0
+    }
+  ],
+  "thermal_loads": [],
+  "material": {
+    "E": 205000000000.0,
+    "sigma_amm": 240000000.0,
+    "MS_target": 0.0,
+    "MS_operator": "=",
+    "MS_design_target": 1.5,
+    "MS_design_operator": ">",
+    "verification_type": "combined"
+  },
+  "section": {
+    "b": 0.12,
+    "h": 0.15,
+    "design": "ratio",
+    "ratio": 1.25
+  },
+  "internal_hinges": [
+    {
+      "node_id": 5
+    }
+  ]
+}

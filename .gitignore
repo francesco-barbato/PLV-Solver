@@ -1,0 +1,78 @@
+# ==========================================
+# Git Ignore - SolutorePLV
+# ==========================================
+
+# --- File di Sistema Operativo ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Icon?
+ehthumbs.db
+Thumbs.db
+Thumbs.db:encryptable
+Desktop.ini
+
+# --- Python & Caches ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+*.so
+*.dll
+*.dylib
+
+# --- Ambienti Virtuali ---
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# --- File Temporanei e Output di Calcolo ---
+temp_output/
+py/temp_output/
+*.tmp
+*.temp
+
+# --- Build, Eseguibili e Packaging (PyInstaller) ---
+build/
+py/build/
+dist/
+py/dist/
+*.manifest
+*.app/
+py/*.app/
+
+# --- IDE e Editor ---
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+
+# Visual Studio Code (mantiene settings.json escludendo stati utente temporanei)
+.vscode/*
+!.vscode/settings.json
+
+# --- File Intermedi LaTeX ---
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+*.toc
+*.nav
+*.snm
+*.vrb
+Report_Risolutore_PLV.*
+
+# --- Esportazioni e Report Generati dall'Utente ---
+*.pdf
