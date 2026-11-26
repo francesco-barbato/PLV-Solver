@@ -75,6 +75,266 @@ def _get_ui_mpl():
         _UI_MPL = (FigureCanvas, Figure, PoligonoMpl, CerchioMpl)
         return _UI_MPL
 
+
+REPORT_CSS = """
+    body { font-family: Arial, sans-serif; font-size: 14px; color: #000000; background-color: #ffffff; line-height: 1.45; }
+    h1 { color: #0d6efd; border-bottom: 2px solid #0d6efd; padding-bottom: 5px; font-size: 20px; break-after: avoid; page-break-after: avoid; }
+    h2 { color: #dc3545; background-color: #f8d7da; padding: 8px; border-left: 4px solid #dc3545; margin-top: 18px; font-size: 16px; break-after: avoid; page-break-after: avoid; }
+    h3, h4, .keep-next { break-after: avoid; page-break-after: avoid; }
+    .keep-together, table.keep-table { break-inside: avoid; page-break-inside: avoid; }
+    thead { display: table-header-group; }
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; margin-bottom: 12px; background-color: #ffffff; }
+    th { background-color: #e9ecef; border: 1px solid #ced4da; padding: 7px 8px; font-weight: bold; color: #000000; font-size: 13px; }
+    td { border: 1px solid #ced4da; padding: 6px 8px; text-align: center; color: #000000; font-size: 13px; }
+    table.compact-table th, table.compact-table td { padding: 4px 6px; font-size: 12px; }
+    .eq-table, .eq-table td, .frac-table, .frac-table td { border: none; width: auto; background: transparent; padding: 0 3px; }
+    .formula { font-family: 'Courier New', Courier, monospace; font-size: 13.5px; font-weight: bold; color: #0b5ed7; background-color: #f1f3f5; padding: 2px 6px; border-radius: 4px; border: 1px solid #dee2e6; }
+"""
+
+
+def impagina_documento_pdf(doc, printer):
+    """Impedisce titoli orfani (keepWithNext) e tabelle/schede spezzate nell'export PDF Qt."""
+    from PyQt6.QtGui import QTextTable, QTextFormat, QTextCursor
+    from PyQt6.QtPrintSupport import QPrinter
+
+    page_sz = printer.pageRect(QPrinter.Unit.Point).size() if printer is not None else doc.pageSize()
+    dl = doc.documentLayout()
+    if printer is not None:
+        dl.setPaintDevice(printer)
+    doc.setPageSize(page_sz)
+    page_h = float(doc.pageSize().height())
+    if page_h <= 10.0:
+        return
+
+    # Pass 0: attiva ripetizione intestazione (repeatRows=1) su tutte le tabelle dati con >= 2 righe
+    it0 = doc.rootFrame().begin()
+    while not it0.atEnd():
+        cf0 = it0.currentFrame()
+        if isinstance(cf0, QTextTable) and cf0.rows() >= 2:
+            tfmt = cf0.format()
+            if tfmt.headerRowCount() == 0 and tfmt.border() > 0:
+                tfmt.setHeaderRowCount(1)
+                cf0.setFormat(tfmt)
+        it0 += 1
+
+    def _raccogli_nodi():
+        nodes = []
+        it = doc.rootFrame().begin()
+        while not it.atEnd():
+            cf = it.currentFrame()
+            b = it.currentBlock()
+            if isinstance(cf, QTextTable):
+                r = dl.frameBoundingRect(cf)
+                nodes.append(('table', cf, r.top(), r.bottom()))
+            elif b.isValid():
+                r = dl.blockBoundingRect(b)
+                nodes.append(('block', b, r.top(), r.bottom()))
+            it += 1
+        return nodes
+
+    def _is_empty_block(node):
+        kind, obj, _, _ = node
+        if kind != 'block':
+            return False
+        txt = obj.text().replace('\ufffc', '').strip()
+        return (not txt) and ('\ufffc' not in obj.text())
+
+    def _is_heading_or_leadin(node, nxt):
+        kind, obj, _, _ = node
+        if kind != 'block':
+            return False
+        if obj.blockFormat().headingLevel() > 0:
+            return True
+        txt = obj.text().replace('\ufffc', '').strip()
+        if not txt:
+            return False
+        if nxt and nxt[0] == 'block' and '\ufffc' in nxt[1].text():
+            return True
+        if nxt and nxt[0] == 'block' and nxt[1].textList() is not None and obj.textList() is None:
+            return True
+        return (
+            txt.endswith(':')
+            or txt.startswith(('TRATTO ', 'Da cui', 'Propriet', 'Formule generali', 'Imponendo il requisito', 'Sostituendo', 'Criterio:'))
+        )
+
+    def _has_break_before(node):
+        kind, obj, _, _ = node
+        fmt = obj.format() if kind == 'table' else obj.blockFormat()
+        return fmt.pageBreakPolicy() == QTextFormat.PageBreakFlag.PageBreak_AlwaysBefore
+
+    def _set_break_before(node):
+        kind, obj, top, _ = node
+        if (top % page_h) < 28.0 or _has_break_before(node):
+            return False
+        if kind == 'table':
+            tfmt = obj.format()
+            tfmt.setPageBreakPolicy(QTextFormat.PageBreakFlag.PageBreak_AlwaysBefore)
+            obj.setFormat(tfmt)
+        else:
+            cur = QTextCursor(obj)
+            bf = obj.blockFormat()
+            bf.setPageBreakPolicy(QTextFormat.PageBreakFlag.PageBreak_AlwaysBefore)
+            cur.setBlockFormat(bf)
+        return True
+
+    def _clear_break_before(node):
+        kind, obj, _, _ = node
+        if not _has_break_before(node):
+            return
+        if kind == 'table':
+            tfmt = obj.format()
+            tfmt.setPageBreakPolicy(QTextFormat.PageBreakFlag.PageBreak_Auto)
+            obj.setFormat(tfmt)
+        else:
+            cur = QTextCursor(obj)
+            bf = obj.blockFormat()
+            bf.setPageBreakPolicy(QTextFormat.PageBreakFlag.PageBreak_Auto)
+            cur.setBlockFormat(bf)
+
+    def _risali_titolo_inizio(nodi_doc, start_idx, max_span_h):
+        """Risale attraverso eventuali sotto-didascalie/intestazioni consecutive (es. Criterio + H2)."""
+        cur_i = start_idx
+        end_bot = nodi_doc[start_idx][3]
+        while cur_i > 0:
+            pk = cur_i - 1
+            while pk >= 0 and _is_empty_block(nodi_doc[pk]):
+                pk -= 1
+            if pk < 0:
+                break
+            cand_node = nodi_doc[pk]
+            # Smette di risalire davanti a un cambio pagina intenzionale esplicito di sezione
+            if _has_break_before(cand_node) and cand_node[1].blockFormat().headingLevel() == 2 if cand_node[0] == 'block' else False:
+                break
+            nxt_c = nodi_doc[cur_i]
+            if _is_heading_or_leadin(cand_node, nxt_c) and (end_bot - cand_node[2]) <= max_span_h:
+                cur_i = pk
+            else:
+                break
+        return cur_i
+
+    def _page(y):
+        return int(max(0.0, y) // page_h)
+
+    for _ in range(36):
+        doc.pageCount()
+        nodi_doc = _raccogli_nodi()
+        n_len = len(nodi_doc)
+        changed = False
+
+        for idx, node in enumerate(nodi_doc):
+            kind, obj, top, bot = node
+            if _is_empty_block(node):
+                continue
+            h_node = bot - top
+
+            j = idx + 1
+            while j < n_len and _is_empty_block(nodi_doc[j]):
+                j += 1
+            nxt = nodi_doc[j] if j < n_len else None
+
+            # 1. KeepTogether blocco con titolo + lista <ul> (es. Verifica Cinematica, Proprieta', Vincoli)
+            if kind == 'block' and (obj.blockFormat().headingLevel() in (3, 4) or obj.text().strip().endswith(':')) and nxt and nxt[0] == 'block' and nxt[1].textList() is not None:
+                end_bot = nxt[3]
+                k_u = j + 1
+                while k_u < n_len and (nodi_doc[k_u][0] == 'block' and nodi_doc[k_u][1].textList() is not None):
+                    end_bot = nodi_doc[k_u][3]
+                    k_u += 1
+                if (end_bot - top) <= 0.85 * page_h and _page(top) < _page(max(top, end_bot - 1.5)):
+                    top_i = _risali_titolo_inizio(nodi_doc, idx, 0.88 * page_h)
+                    if _set_break_before(nodi_doc[top_i]):
+                        for m_i in range(top_i + 1, idx + 1):
+                            _clear_break_before(nodi_doc[m_i])
+                        changed = True
+                        break
+
+            # 1b. KeepTogether sezione corta h2 ("2. ...") + suoi paragrafi consecutivi prima del prossimo h2
+            if kind == 'block' and obj.blockFormat().headingLevel() == 2 and obj.text().strip().startswith("2. "):
+                end_bot = bot
+                k_u = j
+                while k_u < n_len and not (nodi_doc[k_u][0] == 'block' and nodi_doc[k_u][1].blockFormat().headingLevel() == 2):
+                    end_bot = nodi_doc[k_u][3]
+                    k_u += 1
+                if (end_bot - top) <= 0.45 * page_h and _page(top) < _page(max(top, end_bot - 1.5)):
+                    if _set_break_before(node):
+                        changed = True
+                        break
+
+            # 2. KeepTogether scheda singola Asta in Sezione 7 (h4 + table + eventuale Punto stazionario)
+            if kind == 'block' and obj.blockFormat().headingLevel() == 4 and obj.text().strip().startswith("Asta ") and nxt and nxt[0] == 'table':
+                end_bot = nxt[3]
+                k_p = j + 1
+                while k_p < n_len and _is_empty_block(nodi_doc[k_p]):
+                    k_p += 1
+                if k_p < n_len and nodi_doc[k_p][0] == 'block' and "Punto stazionario" in nodi_doc[k_p][1].text():
+                    end_bot = nodi_doc[k_p][3]
+                if (end_bot - top) <= 0.85 * page_h and _page(top) < _page(max(top, end_bot - 1.5)):
+                    top_i = _risali_titolo_inizio(nodi_doc, idx, 0.88 * page_h)
+                    if _set_break_before(nodi_doc[top_i]):
+                        for m_i in range(top_i + 1, j + 1):
+                            _clear_break_before(nodi_doc[m_i])
+                        changed = True
+                        break
+
+            # 3. KeepTogether blocco TRATTO (p TRATTO k + sue eq-table consecutive)
+            if kind == 'block' and obj.text().strip().startswith("TRATTO "):
+                end_bot = bot
+                k_p = j
+                while k_p < n_len:
+                    tk, tobj, _, tbot = nodi_doc[k_p]
+                    if _is_empty_block(nodi_doc[k_p]):
+                        k_p += 1
+                        continue
+                    if tk == 'table' or (tk == 'block' and tobj.text().strip().startswith(('•', 'Σ', '·'))):
+                        end_bot = tbot
+                        k_p += 1
+                    else:
+                        break
+                if (end_bot - top) <= 0.85 * page_h and _page(top) < _page(max(top, end_bot - 1.5)):
+                    top_i = _risali_titolo_inizio(nodi_doc, idx, 0.88 * page_h)
+                    if _set_break_before(nodi_doc[top_i]):
+                        for m_i in range(top_i + 1, idx + 1):
+                            _clear_break_before(nodi_doc[m_i])
+                        changed = True
+                        break
+
+            # 4. KeepWithNext su titoli/didascalie/lead-in: mai orfani in fondo pagina
+            if _is_heading_or_leadin(node, nxt) and nxt is not None:
+                p_cur = _page(top)
+                p_nxt0 = _page(nxt[2])
+                nxt_h = nxt[3] - nxt[2]
+                p_nxt1 = _page(max(nxt[2], nxt[3] - 1.5))
+                if p_cur < p_nxt0 or (nxt_h <= 0.85 * page_h and p_cur < p_nxt1):
+                    top_i = _risali_titolo_inizio(nodi_doc, idx, 0.88 * page_h)
+                    if _set_break_before(nodi_doc[top_i]):
+                        for m_i in range(top_i + 1, idx + 1):
+                            _clear_break_before(nodi_doc[m_i])
+                        changed = True
+                        break
+
+            # 5. KeepTogether su immagini e singoli paragrafi medi/corti che attraversano il cambio pagina
+            if kind == 'block' and 0 < h_node <= 0.85 * page_h:
+                if _page(top) < _page(max(top, bot - 1.5)):
+                    top_i = _risali_titolo_inizio(nodi_doc, idx, 0.90 * page_h)
+                    if _set_break_before(nodi_doc[top_i]):
+                        for m_i in range(top_i + 1, idx + 1):
+                            _clear_break_before(nodi_doc[m_i])
+                        changed = True
+                        break
+
+            # 6. KeepTogether su tabelle compatte (< 85% pagina)
+            if kind == 'table' and 0 < h_node <= 0.85 * page_h:
+                if _page(top) < _page(max(top, bot - 1.5)):
+                    top_i = _risali_titolo_inizio(nodi_doc, idx, 0.90 * page_h)
+                    if _set_break_before(nodi_doc[top_i]):
+                        for m_i in range(top_i + 1, idx + 1):
+                            _clear_break_before(nodi_doc[m_i])
+                        changed = True
+                        break
+
+        if not changed:
+            break
+    doc.pageCount()
+
 # Tipi di vincolo a terra selezionabili (l'ordine e' quello dei menu a tendina; _costruisci_vincolo/_tipo_da_vincolo li traducono)
 TIPI_VINCOLO = [
     "Incastro",
@@ -405,16 +665,7 @@ class UIStrutture(QMainWindow):
         report_layout = QVBoxLayout(self.tab_report)
         self.html_view = QTextBrowser()
         self.html_view.setOpenExternalLinks(False)
-        self.html_view.document().setDefaultStyleSheet("""
-            body { font-family: Arial, sans-serif; font-size: 14px; color: #000000; background-color: #ffffff; line-height: 1.5; }
-            h1 { color: #0d6efd; border-bottom: 2px solid #0d6efd; padding-bottom: 5px; font-size: 20px; }
-            h2 { color: #dc3545; background-color: #f8d7da; padding: 8px; border-left: 4px solid #dc3545; margin-top: 20px; font-size: 16px;}
-            table { width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 15px; background-color: #ffffff; }
-            th { background-color: #e9ecef; border: 1px solid #ced4da; padding: 8px; font-weight: bold; color: #000000; font-size: 13px; }
-            td { border: 1px solid #ced4da; padding: 8px; text-align: center; color: #000000; font-size: 13px; }
-            .eq-table, .eq-table td, .frac-table, .frac-table td { border: none; width: auto; background: transparent; padding: 0 3px; }
-            .formula { font-family: 'Courier New', Courier, monospace; font-size: 14px; font-weight: bold; color: #0b5ed7; background-color: #f1f3f5; padding: 2px 6px; border-radius: 4px; border: 1px solid #dee2e6;}
-        """)
+        self.html_view.document().setDefaultStyleSheet(REPORT_CSS)
         self.html_view.setHtml("<h2>Pronto</h2><p>Costruisci la struttura per vederla nell'Anteprima Live.</p>")
         report_layout.addWidget(self.html_view)
         self.lbl_controlli_solver = QLabel("Nessun calcolo eseguito.")
@@ -2349,7 +2600,8 @@ class UIStrutture(QMainWindow):
             printer.setPageLayout(layout)
             
             temp_doc = self.html_view.document().clone()
-            temp_doc.setPageSize(printer.pageRect(QPrinter.Unit.Point).size())
+            temp_doc.setDefaultStyleSheet(REPORT_CSS)
+            impagina_documento_pdf(temp_doc, printer)
             temp_doc.print(printer)
             
             QMessageBox.information(self, "Successo", "Report esportato in PDF con successo!")

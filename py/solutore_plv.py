@@ -1,6 +1,7 @@
 import os
 import json
 import math
+import struct
 import threading
 
 import sympy as sp
@@ -541,7 +542,7 @@ def plot_sistema_S0(nodi, elementi, reazioni, valori_calcolati, filename, out_di
     plt, patches = _get_mpl()
     import re as _re
     nodi = {k: (float(v[0]), float(v[1])) for k, v in nodi.items()}   # solo per il disegno
-    fig, ax = plt.subplots(figsize=(10, 4.4), dpi=140)
+    fig, ax = plt.subplots(figsize=(10.2, 3.9), dpi=140)
 
     xs_n = [c[0] for c in nodi.values()]
     ys_n = [c[1] for c in nodi.values()]
@@ -571,8 +572,8 @@ def plot_sistema_S0(nodi, elementi, reazioni, valori_calcolati, filename, out_di
     def _est_box(txt):
         clean = _re.sub(r'[\$_{}\\]', '', txt)
         n_ch = max(2, len(clean))
-        hw = (0.0165 * n_ch + 0.022) * span_g
-        hh = 0.042 * span_g
+        hw = (0.0205 * n_ch + 0.028) * span_g
+        hh = 0.048 * span_g
         return hw, hh
 
     def _score_box(cx, cy, hw, hh, link_x, link_y):
@@ -835,14 +836,16 @@ def plot_sistema_S0(nodi, elementi, reazioni, valori_calcolati, filename, out_di
             link_cx, link_cy = 0.5 * (tail_x + tip_x) if par_dot >= 0.707 else tail_x, 0.5 * (tail_y + tip_y) if par_dot >= 0.707 else tail_y
             _place_label(pref_x, pref_y, link_cx, link_cy, lbl_c, col_c, box_c, fontsize=fs_c)
 
-    pad_s = 0.09 * span_g
-    ax.set_xlim(min(all_x) - pad_s, max(all_x) + pad_s)
-    ax.set_ylim(min(all_y) - pad_s, max(all_y) + pad_s)
+    pad_x = 0.08 * span_g
+    pad_y = 0.08 * span_g
+    ax.set_xlim(min(all_x) - pad_x, max(all_x) + pad_x)
+    ax.set_ylim(min(all_y) - pad_y, max(all_y) + pad_y)
+    ax.margins(x=0.12, y=0.22)
     ax.set_aspect('equal')
     ax.axis('off')
     filepath = os.path.abspath(os.path.join(out_dir, filename))
     try:
-        plt.savefig(filepath, bbox_inches='tight', dpi=140)
+        plt.savefig(filepath, bbox_inches='tight', pad_inches=0.16, dpi=140)
     finally:
         plt.close(fig)
     return filepath.replace("\\", "/").lstrip("/")
@@ -916,11 +919,12 @@ def plot_diagrammi_singola_asta(L, expr_M, expr_T, expr_N, nome_asta, filename, 
     for ax in axes:
         ax.set_xlabel("ascissa s [m]", fontsize=8)
         ax.grid(True, linestyle='--', alpha=0.6)
-        
+        ax.margins(x=0.06, y=0.18)
+
     try:
         plt.tight_layout()
         filepath = os.path.abspath(os.path.join(out_dir, filename))
-        plt.savefig(filepath, bbox_inches='tight')
+        plt.savefig(filepath, bbox_inches='tight', pad_inches=0.15)
     finally:
         plt.close(fig) # Garantisce la chiusura in memoria anche in caso di errore
         
@@ -1189,9 +1193,11 @@ def _disegna_diagramma_su_ax(ax, nodi_f, elementi, expr_dict, titolo, col, show_
             zorder=6,
         )
 
-    pad = max_span * 0.10
-    ax.set_xlim(min(all_px) - pad, max(all_px) + pad)
-    ax.set_ylim(min(all_py) - pad, max(all_py) + pad)
+    pad_x = max_span * 0.06
+    pad_y = max_span * 0.06
+    ax.set_xlim(min(all_px) - pad_x, max(all_px) + pad_x)
+    ax.set_ylim(min(all_py) - pad_y, max(all_py) + pad_y)
+    ax.margins(x=0.12, y=0.22)
     ax.set_aspect('equal')
     ax.axis('off')
 
@@ -1209,18 +1215,45 @@ def plot_momenti_S0_S1(nodi, elementi, M0_dict, M1_dict, grado_iperstaticita, ou
     filepath = os.path.abspath(os.path.join(out_dir, filename))
     try:
         plt.tight_layout()
-        plt.savefig(filepath, bbox_inches='tight', dpi=130)
+        plt.savefig(filepath, bbox_inches='tight', pad_inches=0.16, dpi=130)
     finally:
         plt.close(fig)
     return filepath.replace("\\", "/").lstrip("/")
 
-def _img_block_html(title_html, img_path, width, page_break_before=False):
-    """Blocco titolo+immagine centrato e indivisibile in QTextBrowser e PDF."""
+def _scala_dim_png(img_path, max_w, max_h=None):
+    """Calcola attributi width/height proporzionali leggendo l'header PNG per stare nella pagina."""
+    try:
+        p_abs = img_path if os.path.isabs(img_path) else ("/" + img_path.lstrip("/"))
+        with open(p_abs, "rb") as fp:
+            hdr = fp.read(24)
+        if len(hdr) >= 24 and hdr[:8] == b'\x89PNG\r\n\x1a\n':
+            w_px, h_px = struct.unpack('>II', hdr[16:24])
+            if w_px > 0 and h_px > 0:
+                sc = min(float(max_w) / w_px, float(max_h) / h_px) if max_h else (float(max_w) / w_px)
+                return max(80, int(round(w_px * sc))), max(50, int(round(h_px * sc)))
+    except Exception:
+        pass
+    return int(max_w), None
+
+def _tabella_html(headers, rows, keep=True, compact=False):
+    """Genera una tabella HTML con <thead> esplicito (ripetizione riga testata) e class anti-spezzamento."""
+    cl = []
+    if keep: cl.append("keep-table")
+    if compact: cl.append("compact-table")
+    cls_attr = f" class='{' '.join(cl)}'" if cl else ""
+    ths = "".join(f"<th>{h}</th>" for h in headers)
+    trs = "".join(rows)
+    return f"<table{cls_attr}><thead><tr>{ths}</tr></thead><tbody>{trs}</tbody></table>"
+
+def _img_block_html(title_html, img_path, max_w, max_h=None, page_break_before=False):
+    """Blocco titolo+immagine centrato, dimensionato proporzionalmente e indivisibile."""
     pb = " page-break-before: always;" if page_break_before else ""
+    w_o, h_o = _scala_dim_png(img_path, max_w, max_h)
+    dim_attr = f"width='{w_o}' height='{h_o}'" if h_o else f"width='{w_o}'"
     return (
-        f"<div align='center' style='text-align:center; page-break-inside: avoid;{pb} margin: 10px 0 14px 0;'>"
-        f"<div align='center' style='text-align:center; margin-bottom: 4px;'>{title_html}</div>"
-        f"<div align='center' style='text-align:center;'><img src='file:///{img_path}' width='{width}'></div>"
+        f"<div class='keep-together' align='center' style='text-align:center; page-break-inside: avoid; break-inside: avoid;{pb} margin: 4px 0 8px 0;'>"
+        f"<div class='keep-next' align='center' style='text-align:center; page-break-after: avoid; break-after: avoid; margin-bottom: 4px; line-height: 1.2;'>{title_html}</div>"
+        f"<div align='center' style='text-align:center; line-height: 1.0; font-size: 1px; margin: 0; padding: 0;'><img src='file:///{img_path}' {dim_attr}></div>"
         "</div>"
     )
 
@@ -1234,7 +1267,7 @@ def _salva_trio_diagrammi(nodi_f, elementi, M_dict, T_dict, N_dict, tit_M, tit_T
         _disegna_diagramma_su_ax(axes[2], nodi_f, elementi, N_dict, tit_N, "dodgerblue")
         fig.tight_layout(h_pad=1.0)
         filepath = os.path.abspath(os.path.join(out_dir, filename))
-        fig.savefig(filepath, bbox_inches='tight', dpi=130)
+        fig.savefig(filepath, bbox_inches='tight', pad_inches=0.16, dpi=130)
     finally:
         plt.close(fig)
     return filepath.replace("\\", "/").lstrip("/")
@@ -1476,13 +1509,15 @@ def plot_schema_generale(nodi, elementi, supports_n, internal_hinges, point_load
         ax.plot(x, y, 'o', color='white', mec='#0d6efd', mew=2, ms=13, zorder=7)
         ax.text(x, y, str(nid), color='black', fontsize=8.5, weight='bold', ha='center', va='center', zorder=8)
 
-    marg = 0.42 * span
-    ax.set_xlim(min(xs) - marg, max(xs) + marg)
-    ax.set_ylim(min(ys) - marg, max(ys) + marg)
+    marg_x = 0.30 * span
+    marg_y = 0.30 * span
+    ax.set_xlim(min(xs) - marg_x, max(xs) + marg_x)
+    ax.set_ylim(min(ys) - marg_y, max(ys) + marg_y)
+    ax.margins(x=0.12, y=0.22)
     ax.set_aspect('equal')
     ax.axis('off')
     filepath = os.path.abspath(os.path.join(out_dir, filename))
-    plt.savefig(filepath, bbox_inches='tight', dpi=140)
+    plt.savefig(filepath, bbox_inches='tight', pad_inches=0.16, dpi=140)
     plt.close(fig)
     return filepath.replace("\\", "/").lstrip("/")
 
@@ -1575,10 +1610,11 @@ def plot_schema_libero_asta(L, n1_id, n2_id, expr_M, expr_T, expr_N, nome_asta, 
 
     ax.set_xlim(-1.8, float(L)+1.8)
     ax.set_ylim(-1.2, 1.2)
+    ax.margins(x=0.12, y=0.22)
     ax.axis('off')
     
     filepath = os.path.join(out_dir, filename)
-    plt.savefig(filepath, bbox_inches='tight')
+    plt.savefig(filepath, bbox_inches='tight', pad_inches=0.15)
     plt.close()
     return filepath.replace("\\", "/").lstrip("/")
 
@@ -2082,7 +2118,9 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
         if cerniere_info else "; nessuna cerniera interna"
     )
     report.append(f"<p>Telaio piano composto da <b>{num_aste} aste</b> e <b>{num_nodi} nodi</b>{cern_pos_txt}.</p>")
-    report.append(f"<div style='text-align: center; margin: 8px 0 14px 0;'><img src='file:///{img_schema_gen}' width='650'></div>")
+    _w_gen, _h_gen = _scala_dim_png(img_schema_gen, 580, 320)
+    _dim_gen = f"width='{_w_gen}' height='{_h_gen}'" if _h_gen else f"width='{_w_gen}'"
+    report.append(f"<div style='text-align: center; line-height: 1.0; font-size: 1px; margin: 6px 0 10px 0;'><img src='file:///{img_schema_gen}' {_dim_gen}></div>")
 
     report.append("<div style='page-break-inside: avoid;'><p><b>Analisi dei vincoli esterni:</b></p><ul>")
     for det in dettagli_vincoli:
@@ -2571,20 +2609,19 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
 
         u_f = " [N]" if con_unita else ""
         u_m = " [N&middot;m]" if con_unita else ""
-        out = [f"<table><tr><th>Vincolo</th><th>H{u_f}</th><th>V{u_f}</th><th>M{u_m}</th></tr>"]
+        rows_sup = []
         for i_s in sorted(righe_sup):
             lbl, hv, vv, mv = righe_sup[i_s]
             cH = f"<b>{fmt_num(hv, 2)}</b>" if hv is not None else "&mdash;"
             cV = f"<b>{fmt_num(vv, 2)}</b>" if vv is not None else "&mdash;"
             cM = f"<b>{fmt_num(mv, 2)}</b>" if mv is not None else "&mdash;"
-            out.append(f"<tr><td>{lbl}</td><td>{cH}</td><td>{cV}</td><td>{cM}</td></tr>")
-        out.append("</table>")
-        return "\n".join(out)
+            rows_sup.append(f"<tr><td>{lbl}</td><td>{cH}</td><td>{cV}</td><td>{cM}</td></tr>")
+        return _tabella_html(["Vincolo", f"H{u_f}", f"V{u_f}", f"M{u_m}"], rows_sup)
 
     def _append_sezione_sistema(tag, tit_sec, reaz_plot, sol_dict, sol_plot, blocchi_tr, Md, Td, Nd, con_unita, accent_col):
-        report.append(f"<h2>{tit_sec}</h2>")
+        report.append(f"<h2 style='page-break-before: always;'>{tit_sec}</h2>")
 
-        # 1. 3 schemi grafici globali
+        # 1. 3 schemi grafici globali (dimensionati per stare tutti insieme sotto il titolo della sezione)
         p_versi = f"{tag.lower()}_versi.png"
         p_calc = f"{tag.lower()}_calcolate.png"
         p_mono = f"{tag.lower()}_monoassiali.png"
@@ -2593,9 +2630,9 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
         i_mono = plot_sistema_S0(nodi, elementi, reaz_plot, sol_plot, p_mono, out_dir, "monoassiali", con_unita=con_unita, cerniere_plot=cerniere_plot)
 
         sub_tag = "S<sub>0</sub>" if tag == "S0" else "S<sub>1</sub>"
-        report.append(_img_block_html(f"<h4 style='margin:0;'>{sub_tag} &mdash; reazioni (scelta dei versi)</h4>", i_versi, 500))
-        report.append(_img_block_html(f"<h4 style='margin:0;'>{sub_tag} &mdash; reazioni calcolate</h4>", i_calc, 500))
-        report.append(_img_block_html(f"<h4 style='margin:0;'>{sub_tag} &mdash; riferimenti monoassiali (ascissa s)</h4>", i_mono, 500))
+        report.append(_img_block_html(f"<h4 style='margin:0;'>{sub_tag} &mdash; reazioni (scelta dei versi)</h4>", i_versi, 540, 290))
+        report.append(_img_block_html(f"<h4 style='margin:0;'>{sub_tag} &mdash; reazioni calcolate</h4>", i_calc, 540, 290))
+        report.append(_img_block_html(f"<h4 style='margin:0;'>{sub_tag} &mdash; riferimenti monoassiali (ascissa s)</h4>", i_mono, 540, 290))
 
         # 2. Tabella riassuntiva dei vincoli esterni
         report.append(f"<h3>Reazioni vincolari esterne ({sub_tag})</h3>")
@@ -2646,39 +2683,42 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
         idx_s = "0" if tag == "S0" else "1"
         sub_p = f"<sub>{idx_s}</sub>"
         report.append(f"<h3>Azioni di estremit&agrave; delle aste ({sub_tag})</h3>")
-        report.append(
-            f"<table><tr><th>Asta</th>"
-            f"<th>N<sub>{idx_s},i</sub>{u_f}</th><th>T<sub>{idx_s},i</sub>{u_f}</th><th>M<sub>{idx_s},i</sub>{u_m}</th>"
-            f"<th>N<sub>{idx_s},j</sub>{u_f}</th><th>T<sub>{idx_s},j</sub>{u_f}</th><th>M<sub>{idx_s},j</sub>{u_m}</th></tr>"
-        )
+        rows_est = []
         for el in elementi:
             eid = el['id']
             L_ = hyp(nodi[int(el['n2'])][0] - nodi[int(el['n1'])][0], nodi[int(el['n2'])][1] - nodi[int(el['n1'])][1])
             n_i = float(sp.N(Nd[eid].subs(s_sym_tab, 0))); n_j = float(sp.N(Nd[eid].subs(s_sym_tab, L_)))
             t_i = float(sp.N(Td[eid].subs(s_sym_tab, 0))); t_j = float(sp.N(Td[eid].subs(s_sym_tab, L_)))
             m_i = float(sp.N(Md[eid].subs(s_sym_tab, 0))); m_j = float(sp.N(Md[eid].subs(s_sym_tab, L_)))
-            report.append(
+            rows_est.append(
                 f"<tr><td><b>Asta {eid}</b> <small>({el['n1']}&rarr;{el['n2']})</small></td>"
                 f"<td>{fmt_num(n_i, 2)}</td><td>{fmt_num(t_i, 2)}</td><td>{fmt_num(m_i, 2)}</td>"
                 f"<td>{fmt_num(n_j, 2)}</td><td>{fmt_num(t_j, 2)}</td><td>{fmt_num(m_j, 2)}</td></tr>"
             )
-        report.append("</table>")
+        report.append(_tabella_html([
+            "Asta",
+            f"N<sub>{idx_s},i</sub>{u_f}", f"T<sub>{idx_s},i</sub>{u_f}", f"M<sub>{idx_s},i</sub>{u_m}",
+            f"N<sub>{idx_s},j</sub>{u_f}", f"T<sub>{idx_s},j</sub>{u_f}", f"M<sub>{idx_s},j</sub>{u_m}",
+        ], rows_est, keep=True, compact=True))
 
-        # 5. Box ordinati per ogni asta con N, T, M (decimali puliti a 2 cifre)
+        # 5. Tabella compatta unica per N, T, M (evita pagine quasi vuote con ultima asta isolata)
         report.append(f"<h3>Caratteristiche della sollecitazione per tratto ({sub_tag})</h3>")
+        rows_sol = []
         for el in elementi:
             eid = el['id']
             L_ = hyp(nodi[int(el['n2'])][0] - nodi[int(el['n1'])][0], nodi[int(el['n2'])][1] - nodi[int(el['n1'])][1])
             Lf = float(L_)
-            report.append(f"<div style='background-color: #f8f9fa; padding: 8px 12px; border: 1px solid #dee2e6; border-left: 4px solid {accent_col}; margin-bottom: 8px; border-radius: 4px; page-break-inside: avoid;'>")
-            report.append(f"<b>Asta {eid}</b> (Nodo {el['n1']} &rarr; Nodo {el['n2']}, 0 &le; s &le; {Lf:.2f} m):<br>")
-            report.append(
-                f"<span style='display:inline-block; margin-top:4px;'>"
-                f"N{sub_p}(s) = <span class='formula'>{pulisci_formula(Nd[eid], decimale=True)}</span>{u_f} &nbsp;|&nbsp; "
-                f"T{sub_p}(s) = <span class='formula'>{pulisci_formula(Td[eid], decimale=True)}</span>{u_f} &nbsp;|&nbsp; "
-                f"M{sub_p}(s) = <span class='formula'>{pulisci_formula(Md[eid], decimale=True)}</span>{u_m}"
-                f"</span></div>"
+            rows_sol.append(
+                f"<tr><td><b>Asta {eid}</b> <small>({el['n1']}&rarr;{el['n2']})</small></td>"
+                f"<td>0 &le; s &le; {Lf:.2f} m</td>"
+                f"<td><span class='formula'>{pulisci_formula(Nd[eid], decimale=True)}</span></td>"
+                f"<td><span class='formula'>{pulisci_formula(Td[eid], decimale=True)}</span></td>"
+                f"<td><span class='formula'>{pulisci_formula(Md[eid], decimale=True)}</span></td></tr>"
             )
+        report.append(_tabella_html([
+            "Asta", "Dominio",
+            f"N{sub_p}(s){u_f}", f"T{sub_p}(s){u_f}", f"M{sub_p}(s){u_m}"
+        ], rows_sol, keep=True, compact=True))
 
         # 6. 3 Diagrammi globali del sistema
         sub_u = "₀" if tag == "S0" else "₁"
@@ -2695,7 +2735,7 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
         # Normalizza etichette titoli nei grafici con notazione pulita
         report.append(_img_block_html(
             f"<h4 style='margin:0;'>Diagrammi globali ({sub_tag}): Momento M, Taglio T, Sforzo Normale N</h4>",
-            p_diag_sys, 560, page_break_before=True
+            p_diag_sys, 860, 940, page_break_before=True
         ))
 
     # ==========================================
@@ -2724,13 +2764,13 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
             M1_dict, T1_dict, N1_dict, con_unita=False, accent_col="#dc3545"
         )
     else:
-        report.append("<h2>4. Sistema S<sub>1</sub> &mdash; incognita unitaria</h2><p>Non necessario (la struttura &egrave; isostatica).</p>")
+        report.append("<h2 style='page-break-before: always;'>4. Sistema S<sub>1</sub> &mdash; incognita unitaria</h2><p>Non necessario (la struttura &egrave; isostatica).</p>")
 
     # ==========================================
     # SEZIONE 5 & 6: COEFFICIENTI PLV (TABELLA COMPATTA) + CONGRUENZA CON CEDIMENTI
     # ==========================================
     if grado_iperstaticita > 0:
-        report.append("<h2>5. Coefficienti di deformabilit&agrave; &mdash; Impostazione degli integrali (PLV)</h2>")
+        report.append("<h2 style='page-break-before: always;'>5. Coefficienti di deformabilit&agrave; &mdash; Impostazione degli integrali (PLV)</h2>")
         report.append("<div style='background-color: #e2e3e5; padding: 10px 14px; border-left: 4px solid #6c757d; margin-bottom: 14px;'>")
         report.append("<b>Formule generali di Mohr (solo flessione):</b><br>")
         report.append("<span class='formula'>&delta;<sub>10</sub> = (1/EI) &Sigma; &int;<sub>0</sub><sup>L</sup> M<sub>0</sub>(s)&middot;M<sub>1</sub>(s) ds</span>"
@@ -2742,9 +2782,7 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
         ei_noto_reale = (modalita == "verifica") or ('EI' in _mat_d)
         delta_10, delta_11 = sp.Integer(0), sp.Integer(0)
 
-        report.append("<table><tr><th>Asta</th><th>L [m]</th><th>M<sub>0</sub>(s) [N&middot;m]</th><th>M<sub>1</sub>(s)</th>"
-                      "<th>&int;<sub>0</sub><sup>L</sup> M<sub>0</sub>&middot;M<sub>1</sub> ds</th>"
-                      "<th>&int;<sub>0</sub><sup>L</sup> M<sub>1</sub><sup>2</sup> ds</th></tr>")
+        rows_mohr = []
         for el in elementi:
             x_sym = sp.Symbol("s")
             L = hyp(nodi[int(el['n2'])][0] - nodi[int(el['n1'])][0], nodi[int(el['n2'])][1] - nodi[int(el['n1'])][1])
@@ -2752,7 +2790,7 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
             d10_t = sp.integrate(M0_expr * M1_expr, (x_sym, 0, L))
             d11_t = sp.integrate(M1_expr * M1_expr, (x_sym, 0, L))
             delta_10 += d10_t; delta_11 += d11_t
-            report.append(
+            rows_mohr.append(
                 f"<tr><td><b>Asta {el['id']}</b></td><td>{float(L):.2f}</td>"
                 f"<td><span class='formula'>{pulisci_formula(M0_expr, decimale=True)}</span></td>"
                 f"<td><span class='formula'>{pulisci_formula(M1_expr, decimale=True)}</span></td>"
@@ -2760,12 +2798,17 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
                 f"<td>{fmt_num(float(sp.N(d11_t)), 3)}</td></tr>"
             )
         delta_10 = sp.simplify(delta_10); delta_11 = sp.simplify(delta_11)
-        report.append(
+        rows_mohr.append(
             f"<tr style='background-color:#eef4ff; font-weight:bold;'>"
             f"<td colspan='4' style='text-align:right;'>Totale:</td>"
             f"<td>{fmt_num(float(sp.N(delta_10)), 3)}</td>"
-            f"<td>{fmt_num(float(sp.N(delta_11)), 3)}</td></tr></table>"
+            f"<td>{fmt_num(float(sp.N(delta_11)), 3)}</td></tr>"
         )
+        report.append(_tabella_html([
+            "Asta", "L [m]", "M<sub>0</sub>(s) [N&middot;m]", "M<sub>1</sub>(s)",
+            "&int;<sub>0</sub><sup>L</sup> M<sub>0</sub>&middot;M<sub>1</sub> ds",
+            "&int;<sub>0</sub><sup>L</sup> M<sub>1</sub><sup>2</sup> ds"
+        ], rows_mohr, keep=True))
 
         if delta_11 == 0 or abs(float(delta_11)) < 1e-14 * max(1.0, float(sum(L_**3 for L_ in [hyp(nodi[int(e_['n2'])][0]-nodi[int(e_['n1'])][0], nodi[int(e_['n2'])][1]-nodi[int(e_['n1'])][1]) for e_ in elementi]))):
             stop("Calcolo impossibile: &delta;<sub>11</sub> = 0",
@@ -2879,13 +2922,13 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
         )
     else:
         unita_X1 = "N"
-        report.append("<h2>5. Coefficienti di deformabilit&agrave; (PLV)</h2><p>Non necessari (la struttura &egrave; isostatica).</p>")
+        report.append("<h2 style='page-break-before: always;'>5. Coefficienti di deformabilit&agrave; (PLV)</h2><p>Non necessari (la struttura &egrave; isostatica).</p>")
         report.append("<h2>6. Equazione di congruenza</h2><p>Non necessaria (la struttura &egrave; isostatica).</p>")
 
     # ==========================================
     # SEZIONE 7: SISTEMA REALE — SOVRAPPOSIZIONE S = S0 + X1 * S1
     # ==========================================
-    report.append("<h2>7. Sistema reale &mdash; sovrapposizione S = S<sub>0</sub> + X<sub>1</sub> &middot; S<sub>1</sub></h2>")
+    report.append("<h2 style='page-break-before: always;'>7. Sistema reale &mdash; sovrapposizione S = S<sub>0</sub> + X<sub>1</sub> &middot; S<sub>1</sub></h2>")
 
     nome_sym = {'Fx': 'H', 'Fy': 'V', 'M': 'M', 'Fn': 'R'}
     def _nome_reaz(tipo_, nodo_, sym_=None):
@@ -2940,11 +2983,11 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
     report.append(f"<p>Convenzione: {'; '.join(conv_parti)}.</p>")
 
     report.append("<h3>Reazioni vincolari definitive (esterne)</h3>")
-    report.append("<table><tr><th>Reazione</th><th>Nodo</th><th>Valore</th><th>Unit&agrave;</th></tr>")
+    rows_rfin = []
     for rf in reaz_fin:
         unita = "N&middot;m" if rf['tipo'] == 'M' else "N"
-        report.append(f"<tr><td>{rf['nome']}</td><td>{rf['nodo']}</td><td><b>{fmt_num(float(rf['val']), 2)}</b></td><td>{unita}</td></tr>")
-    report.append("</table>")
+        rows_rfin.append(f"<tr><td>{rf['nome']}</td><td>{rf['nodo']}</td><td><b>{fmt_num(float(rf['val']), 2)}</b></td><td>{unita}</td></tr>")
+    report.append(_tabella_html(["Reazione", "Nodo", "Valore", "Unit&agrave;"], rows_rfin, keep=True))
 
     # Verifica equilibrio globale + forze trasmesse nelle cerniere
     def _componenti(rf):
@@ -2993,9 +3036,7 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
             )
     if righe_cern:
         report.append("<h3>Forze interne definitive nelle cerniere</h3>")
-        report.append("<table><tr><th>Nodo cerniera</th><th>Ramo</th><th>H [N]</th><th>V [N]</th><th>M in cerniera [N&middot;m]</th></tr>")
-        report.extend(righe_cern)
-        report.append("</table>")
+        report.append(_tabella_html(["Nodo cerniera", "Ramo", "H [N]", "V [N]", "M in cerniera [N&middot;m]"], righe_cern, keep=True))
 
     # Espressioni analitiche definitive N(s), T(s), M(s)
     report.append("<h3>Caratteristiche definitive della sollecitazione per tratto</h3>")
@@ -3022,13 +3063,13 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
                     M_star = float(sp.N(M_fin.subs(s_sym_8, s_star)))
                     punti_staz_html.append(f"s<sup>*</sup> = {fmt_num(s_star, 2)} m (T = 0) &rArr; <b>M<sub>extr</sub> = {fmt_num(M_star, 2)} N&middot;m</b>")
 
-        report.append(f"<div style='background-color: #f8f9fa; padding: 10px 12px; border: 1px solid #dee2e6; border-left: 4px solid #0d6efd; margin-bottom: 10px; border-radius: 4px; page-break-inside: avoid;'>")
+        report.append(f"<div class='keep-together' style='background-color: #f8f9fa; padding: 10px 12px; border: 1px solid #dee2e6; border-left: 4px solid #0d6efd; margin-bottom: 10px; border-radius: 4px; page-break-inside: avoid;'>")
         report.append(f"<h4 style='color: #0d6efd; margin: 0 0 6px 0;'>Asta {el_id} (Nodo {el['n1']} &rarr; Nodo {el['n2']}, L = {Lf:.2f} m)</h4>")
-        report.append("<table style='width: 100%; margin-bottom: 4px;'><tr>"
+        report.append("<table class='keep-table' style='width: 100%; margin-bottom: 4px;'><thead><tr>"
                       "<th style='width: 16%;'>Grandezza</th>"
                       "<th style='width: 28%; background-color:#e3f2fd;'>N(s) [N]</th>"
                       "<th style='width: 28%; background-color:#e8f5e9;'>T(s) [N]</th>"
-                      "<th style='width: 28%; background-color:#ffebee;'>M(s) [N&middot;m]</th></tr>")
+                      "<th style='width: 28%; background-color:#ffebee;'>M(s) [N&middot;m]</th></tr></thead><tbody>")
         report.append(f"<tr><td><b>Espressione</b></td>"
                       f"<td><span class='formula'>{pulisci_formula(N_fin, decimale=True)}</span></td>"
                       f"<td><span class='formula'>{pulisci_formula(T_fin, decimale=True)}</span></td>"
@@ -3036,7 +3077,7 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
         report.append(f"<tr><td><b>Estremi</b> <small>(s=0 / s={Lf:.2f})</small></td>"
                       f"<td>{fmt_num(N_0, 2)} / {fmt_num(N_L, 2)}</td>"
                       f"<td>{fmt_num(T_0, 2)} / {fmt_num(T_L, 2)}</td>"
-                      f"<td>{fmt_num(M_0, 2)} / {fmt_num(M_L, 2)}</td></tr></table>")
+                      f"<td>{fmt_num(M_0, 2)} / {fmt_num(M_L, 2)}</td></tr></tbody></table>")
         if punti_staz_html:
             report.append(f"<p style='margin: 4px 0 0 0; font-size: 13px; color: #842029;'><b>Punto stazionario:</b> {'; '.join(punti_staz_html)}</p>")
         report.append("</div>")
@@ -3046,7 +3087,7 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
         nodi, elementi, reazioni_reale_plot, soluzione_reale_plot,
         "reale_monoassiali.png", out_dir, "monoassiali", con_unita=True, cerniere_plot=cerniere_plot
     )
-    report.append(_img_block_html("<h4 style='margin:0;'>Reale &mdash; riferimenti monoassiali</h4>", img_reale_mono, 500))
+    report.append(_img_block_html("<h4 style='margin:0;'>Reale &mdash; riferimenti monoassiali</h4>", img_reale_mono, 560, 300))
 
     img_fin_diag = _salva_trio_diagrammi(
         nodi_f, elementi, M_fin_all, T_fin_all, N_fin_all,
@@ -3057,7 +3098,7 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
     )
     report.append(_img_block_html(
         "<h3 style='margin:0;'>Diagrammi finali delle sollecitazioni (Sistema Reale)</h3>",
-        img_fin_diag, 560, page_break_before=True
+        img_fin_diag, 860, 940, page_break_before=True
     ))
 
     if equilibrio_ok and cerniere_ok:
@@ -3133,14 +3174,13 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
         forma = str(ps.get('shape', 'area')); modo_p = str(ps.get('mode', 'design')); k_rett = float(ps.get('ratio', 1) or 1)
         sigma_t_p = (sigma_amm_p / (1 + MS_t_p)) if (1 + MS_t_p > 1e-9) else float('nan')
         report.append("<h3>Pendoli (bielle): tirante o puntone e sezione</h3>")
-        report.append("<table><tr><th>Pendolo</th><th>Nodo</th><th>Asse</th><th>N [N]</th><th>Funzionamento</th></tr>")
-        righe_sez = []
+        rows_pend, righe_sez = [], []
         for rf in pendoli:
             sup_p = supports_n[rf['sup_idx']] if rf.get('sup_idx') is not None else {}
             ang_ax = float(sup_p.get('axis_angle', float(rf['angle']) + 90))
             Np = float(rf['val'])
             funz, col = ("scarico (N = 0)", "#6c757d") if abs(Np) < 1e-6 else (("TIRANTE (trazione)", "#0d6efd") if Np > 0 else ("PUNTONE (compressione)", "#dc3545"))
-            report.append(f"<tr><td>{rf['nome']}</td><td>{rf['nodo']}</td><td>{ang_ax:.2f}&deg;</td><td><b>{fmt_num(Np, 2)}</b></td><td style='color:{col}; font-weight:bold;'>{funz}</td></tr>")
+            rows_pend.append(f"<tr><td>{rf['nome']}</td><td>{rf['nodo']}</td><td>{ang_ax:.2f}&deg;</td><td><b>{fmt_num(Np, 2)}</b></td><td style='color:{col}; font-weight:bold;'>{funz}</td></tr>")
             info_p = {'nodo': rf['nodo'], 'N': Np, 'funzionamento': funz.split()[0].lower(), 'asse_deg': ang_ax}
             if modo_p == 'verifica':
                 A_p = float(ps.get('b',0))*float(ps.get('h',0)) if forma=='rettangolare' else (math.pi*float(ps.get('d',0))**2/4 if forma=='circolare' else float(ps.get('A',0)))
@@ -3153,7 +3193,8 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
                 elif forma == 'circolare': info_p['d'] = math.sqrt(4*A_req/math.pi)
                 righe_sez.append(f"<p><b>{rf['nome']} (nodo {rf['nodo']}):</b> {funz} &mdash; A {op_p} {fmt_sci_html(A_req)} m&sup2; ({A_req*1e4:.2f} cm&sup2;)</p>")
             ULTIMI_RISULTATI['pendoli'].append(info_p)
-        report.append("</table>"); report.extend(righe_sez)
+        report.append(_tabella_html(["Pendolo", "Nodo", "Asse", "N [N]", "Funzionamento"], rows_pend, keep=True))
+        report.extend(righe_sez)
 
     # Identazione sentinella per il blocco Sezione 8 e 9 sotto
     if True:
@@ -3300,12 +3341,12 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
             report.append("<div style='background-color: #f8f9fa; padding: 16px; border-left: 5px solid #0a58ca; border-radius: 4px; margin-bottom: 18px;'>")
             if asta_critica is not None:
                 if top_ver:
-                    report.append("<table><tr><th>Asta</th><th>s [m]</th><th>|N| [N]</th><th>|M| [N&middot;m]</th><th>&sigma; [MPa]</th><th>Ruolo</th></tr>")
+                    rows_tv = []
                     for sc_v, e_v, s_v, n_v, m_v in top_ver:
                         is_gov = (e_v == asta_critica and abs(s_v - s_critico) < 1e-4)
                         ruolo = "<b style='color:#0a58ca;'>Sezione critica</b>" if is_gov else "Confronto"
-                        report.append(f"<tr><td>Asta {e_v}</td><td>{fmt_num(s_v, 2)}</td><td>{fmt_num(n_v, 2)}</td><td>{fmt_num(m_v, 2)}</td><td><b>{sc_v/1e6:.2f}</b></td><td>{ruolo}</td></tr>")
-                    report.append("</table>")
+                        rows_tv.append(f"<tr><td>Asta {e_v}</td><td>{fmt_num(s_v, 2)}</td><td>{fmt_num(n_v, 2)}</td><td>{fmt_num(m_v, 2)}</td><td><b>{sc_v/1e6:.2f}</b></td><td>{ruolo}</td></tr>")
+                    report.append(_tabella_html(["Asta", "s [m]", "|N| [N]", "|M| [N&middot;m]", "&sigma; [MPa]", "Ruolo"], rows_tv, keep=True))
                 report.append(f"<p>La tensione normale massima si raggiunge nell'<b>Asta {asta_critica}</b> a <b>s = {fmt_num(s_critico, 2)} m</b> "
                               f"(|N| = {fmt_num(abs(N_in_s_critico), 2)} N, |M| = {fmt_num(abs(M_in_s_critico), 2)} N&middot;m).</p>")
             else:
@@ -3473,12 +3514,12 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
             top_dim = _raccogli_top_sezioni(punti_NM, _score_dim, top_n=3)
             report.append("<div style='background-color: #f8f9fa; padding: 14px 16px; border-left: 5px solid #0a58ca; border-radius: 4px; margin-bottom: 18px;'>")
             if top_dim:
-                report.append("<table><tr><th>Asta</th><th>s [m]</th><th>|N| [N]</th><th>|M| [N&middot;m]</th><th>Ruolo</th></tr>")
+                rows_td = []
                 for _, e_v, s_v, n_v, m_v in top_dim:
                     is_gov = (asta_gov is not None and e_v == asta_gov and abs(s_v - s_gov) < 1e-3)
                     ruolo = "<b style='color:#0a58ca;'>Sezione critica governante</b>" if is_gov else "Sezione candidata"
-                    report.append(f"<tr><td>Asta {e_v}</td><td>{fmt_num(s_v, 2)}</td><td>{fmt_num(n_v, 2)}</td><td>{fmt_num(m_v, 2)}</td><td>{ruolo}</td></tr>")
-                report.append("</table>")
+                    rows_td.append(f"<tr><td>Asta {e_v}</td><td>{fmt_num(s_v, 2)}</td><td>{fmt_num(n_v, 2)}</td><td>{fmt_num(m_v, 2)}</td><td>{ruolo}</td></tr>")
+                report.append(_tabella_html(["Asta", "s [m]", "|N| [N]", "|M| [N&middot;m]", "Ruolo"], rows_td, keep=True))
             if asta_gov is not None:
                 report.append(f"<p>La sezione che governa il dimensionamento &egrave; nell'<b>Asta {asta_gov}</b> a <b>s = {fmt_num(s_gov, 2)} m</b> "
                               f"(|N<sub>E</sub>| = {fmt_num(N_E_abs, 2)} N, |M<sub>E</sub>| = {fmt_num(M_E_abs, 2)} N&middot;m). "
