@@ -266,43 +266,85 @@ def risolvi_sistema_lineare(equazioni, incognite, nome, report):
         stop(f"Sistema {nome} non univocamente risolvibile", "Alcune reazioni restano espresse in funzione di altre incognite.")
     return risultato
 
-def fmt_sci_plain(val, dec=2):
-    """Notazione scientifica Unicode plain text (per Matplotlib) senza tag HTML."""
+def _trim_zeros_num_str(s):
+    """Elimina zeri decimali finali inutili (es. '1200.00' -> '1200', '2.050' -> '2.05')."""
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    return "0" if s in ("", "-", "-0", "&minus;", "&minus;0") else s
+
+
+def _fmt_sci(val, sig=3, plain=False):
+    """Notazione scientifica pulita con `sig` cifre significative (HTML o Unicode plain)."""
     v = float(val)
-    if abs(v) < 1e-12:
+    if v == 0.0 or abs(v) < 1e-12:
         return "0"
-    if 0.01 <= abs(v) < 10000:
-        return fmt_num(v, dec, plain=True)
-    sign = "-" if v < 0 else ""
-    mant, exp_s = f"{abs(v):.{dec}e}".split("e")
+    sig_dec = max(0, int(sig) - 1)
+    mant, exp_s = f"{abs(v):.{sig_dec}e}".split("e")
+    mant = _trim_zeros_num_str(mant)
     exp_i = int(exp_s)
-    sup_map = str.maketrans("0123456789-", "⁰¹²³⁴⁵⁶⁷⁸⁹⁻")
-    return f"{sign}{mant} × 10{str(exp_i).translate(sup_map)}"
-
-def fmt_num(val, dec=2, plain=False):
-    """Formatta un numero reale in stringa pulita (interi senza .00, altri a `dec` cifre decimali)."""
-    v = float(val)
-    if abs(v) < 1e-9:
-        return "0"
-    if abs(v - round(v)) < 1e-7:
-        return str(int(round(v)))
-    if abs(v) < 10 ** (-dec) * 0.5:
-        return fmt_sci_plain(v, dec) if plain else fmt_sci_html(v, dec)
-    s = f"{v:.{dec}f}"
-    return "0" if s in ("-0.00", "-0.0", "-0") else s
-
-def fmt_sci_html(val, dec=2):
-    """Notazione scientifica HTML (es. 2.05 × 10¹¹) al posto di 2.05e+11; numeri medi in formato standard."""
-    v = float(val)
-    if abs(v) < 1e-12:
-        return "0"
-    if 0.01 <= abs(v) < 10000:
-        return fmt_num(v, dec)
+    if exp_i == 0:
+        sign_p = ("-" if plain else "&minus;") if v < 0 else ""
+        return f"{sign_p}{mant}"
+    if plain:
+        sign = "-" if v < 0 else ""
+        sup_map = str.maketrans("0123456789-", "⁰¹²³⁴⁵⁶⁷⁸⁹⁻")
+        return f"{sign}{mant} × 10{str(exp_i).translate(sup_map)}"
     sign = "&minus;" if v < 0 else ""
-    mant, exp_s = f"{abs(v):.{dec}e}".split("e")
-    exp_i = int(exp_s)
     exp_str = f"&minus;{abs(exp_i)}" if exp_i < 0 else str(exp_i)
     return f"{sign}{mant} &times; 10<sup>{exp_str}</sup>"
+
+
+def fmt_smart(val, min_sig=None, fixed_min=0.001, dec_large=2, sci_sig=3, plain=False):
+    """Formatta numeri adattando la precisione all'ordine di grandezza senza troncare valori piccoli."""
+    v = float(val)
+    if v == 0.0 or abs(v) < 1e-12:
+        return "0"
+    av = abs(v)
+    if av < fixed_min:
+        sig_use = min_sig if min_sig is not None else sci_sig
+        return _fmt_sci(v, sig=sig_use, plain=plain)
+    if min_sig is not None:
+        e10 = math.floor(math.log10(av))
+        dec = max(dec_large if av >= 1.0 else 4, min_sig - 1 - e10)
+    elif av >= 1.0:
+        dec = dec_large
+    else:
+        dec = 4
+    return _trim_zeros_num_str(f"{v:.{dec}f}")
+
+
+def _fmt_sci_dispatch(val, dec=2, sig=None, plain=False):
+    """Formatta in notazione scientifica (o smart per ordini intermedi) condiviso tra HTML e plain."""
+    v = float(val)
+    if v == 0.0 or abs(v) < 1e-12:
+        return "0"
+    if 0.001 <= abs(v) < 10000:
+        return fmt_smart(v, min_sig=sig, dec_large=dec, plain=plain)
+    sig_use = sig if sig is not None else max(1, int(dec) + 1)
+    return _fmt_sci(v, sig=sig_use, plain=plain)
+
+
+def fmt_sci_plain(val, dec=2, sig=None):
+    """Notazione scientifica Unicode plain text (per Matplotlib) senza tag HTML."""
+    return _fmt_sci_dispatch(val, dec=dec, sig=sig, plain=True)
+
+
+def fmt_num(val, dec=2, plain=False):
+    """Formatta un numero reale in stringa pulita evitando troncamenti su valori piccoli."""
+    v = float(val)
+    if v == 0.0 or abs(v) < 1e-12:
+        return "0"
+    if abs(v) >= 0.5 and abs(v - round(v)) < 1e-7:
+        return str(int(round(v)))
+    if abs(v) < 10 ** (-dec + 1):
+        return fmt_smart(v, dec_large=dec, plain=plain)
+    s = f"{v:.{dec}f}"
+    return "0" if s.lstrip("-") in ("0", "0.0", "0.00", "0.000", "0.0000") else s
+
+
+def fmt_sci_html(val, dec=2, sig=None):
+    """Notazione scientifica HTML (es. 2.05 × 10¹¹) al posto di 2.05e+11; numeri medi in formato smart."""
+    return _fmt_sci_dispatch(val, dec=dec, sig=sig, plain=False)
 
 def sym_reaz_html(name):
     """Converte nomi di reazione (H_8, V_3, M_1, Rn_7, Hc_5, Vc_5, X_1) in pedici HTML senza underscore."""
@@ -1484,7 +1526,7 @@ def plot_schema_generale(nodi, elementi, supports_n, internal_hinges, point_load
             v_c = float(sup.get(k_c, 0) or 0)
             if abs(v_c) > 1e-12:
                 unit_c = 'rad' if k_c == 'delta_w' else 'm'
-                val_c = fmt_num(v_c, 4) if abs(v_c) >= 1e-4 else fmt_num(v_c, 6)
+                val_c = fmt_smart(v_c, fixed_min=1e-4, plain=True)
                 ced_parti.append(f"{sim_c}={val_c} {unit_c}")
         if ced_parti:
             d_ced = _dir_terra(nid, 'libero')
@@ -2129,27 +2171,24 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
 
     report.append("<div style='background-color: #f8f9fa; padding: 10px 14px; border-left: 4px solid #198754; margin-bottom: 16px;'>")
     report.append("<h4 style='margin: 0 0 6px 0;'>Propriet&agrave; Geometriche e del Materiale</h4><ul style='margin: 4px 0;'>")
-    gpa_note = f" ({fmt_num(E / 1e9, 2)} GPa)" if E >= 1e9 else ""
-    report.append(f"<li>Modulo di Young (E): <b>{fmt_sci_html(E)} Pa</b>{gpa_note}</li>")
-    report.append(f"<li>Tensione ammissibile (&sigma;<sub>amm</sub>): <b>{fmt_num(sigma_amm_p1 / 1e6, 2)} MPa</b></li>")
+    W_f_p1 = (b * (h**2)) / 6
+    gpa_note = f" ({fmt_smart(E / 1e9)} GPa)" if E >= 1e9 else ""
+    report.append(f"<li>Modulo di Young (E): <b>{fmt_sci_html(E, sig=4)} Pa</b>{gpa_note}</li>")
+    report.append(f"<li>Tensione ammissibile (&sigma;<sub>amm</sub>): <b>{fmt_smart(sigma_amm_p1 / 1e6)} MPa</b> ({fmt_sci_html(sigma_amm_p1, sig=4)} Pa)</li>")
+    sez_desc = "Dimensioni sezione assegnata (Punto 3)" if modalita == "dimensionamento" else "Dimensioni sezione rettangolare"
+    report.append(f"<li>{sez_desc}: b = <b>{fmt_smart(b)} m</b>, h = <b>{fmt_smart(h)} m</b></li>")
+    report.append(f"<li>Area (A = b&middot;h): <b>{fmt_smart(A, min_sig=4)} m<sup>2</sup></b></li>")
+    report.append(f"<li>Momento d'Inerzia (I = b&middot;h<sup>3</sup>/12): <b>{fmt_sci_html(I, sig=4)} m<sup>4</sup></b></li>")
+    report.append(f"<li>Modulo di resistenza flessionale (W = b&middot;h<sup>2</sup>/6): <b>{fmt_sci_html(W_f_p1, sig=4)} m<sup>3</sup></b></li>")
+    ei_tag = " (assegnata)" if EI_assegnato else ""
+    report.append(f"<li>Rigidezza flessionale (EI){ei_tag}: <b>{fmt_sci_html(EI, sig=4)} N&middot;m<sup>2</sup></b></li>")
     if modalita == "dimensionamento":
-        if EI_assegnato:
-            report.append(f"<li>Rigidezza flessionale (EI) assegnata: <b>{fmt_sci_html(EI)} N&middot;m<sup>2</sup></b></li>")
-        else:
-            report.append("<li>Rigidezza flessionale: <b>EI = cost.</b></li>")
         if design_mode == 'ratio':
-            report.append(f"<li>Sezione rettangolare da dimensionare con rapporto di forma: <b>h / b = {fmt_num(ratio_k, 2)}</b></li>")
+            report.append(f"<li>Parametro di dimensionamento (Punto 4): rapporto di forma <b>h / b = {fmt_smart(ratio_k)}</b> (b incognita)</li>")
         elif design_mode == 'h':
-            report.append(f"<li>Sezione rettangolare da dimensionare con base fissata: <b>b = {fmt_num(b, 3)} m</b> (altezza h incognita)</li>")
+            report.append(f"<li>Parametro di dimensionamento (Punto 4): base fissata <b>b = {fmt_smart(b)} m</b> (altezza h incognita)</li>")
         elif design_mode == 'b':
-            report.append(f"<li>Sezione rettangolare da dimensionare con altezza fissata: <b>h = {fmt_num(h, 3)} m</b> (base b incognita)</li>")
-    else:
-        W_f_p1 = (b * (h**2)) / 6
-        report.append(f"<li>Dimensioni sezione rettangolare: b = <b>{fmt_num(b, 3)} m</b>, h = <b>{fmt_num(h, 3)} m</b></li>")
-        report.append(f"<li>Area (A = b&middot;h): <b>{fmt_num(A, 4) if float(sp.N(A)) >= 1e-3 else fmt_sci_html(A)} m<sup>2</sup></b></li>")
-        report.append(f"<li>Momento d'Inerzia (I = b&middot;h<sup>3</sup>/12): <b>{fmt_sci_html(I)} m<sup>4</sup></b></li>")
-        report.append(f"<li>Modulo di resistenza flessionale (W = b&middot;h<sup>2</sup>/6): <b>{fmt_sci_html(W_f_p1)} m<sup>3</sup></b></li>")
-        report.append(f"<li>Rigidezza flessionale (EI): <b>{fmt_sci_html(EI)} N&middot;m<sup>2</sup></b></li>")
+            report.append(f"<li>Parametro di dimensionamento (Punto 4): altezza fissata <b>h = {fmt_smart(h)} m</b> (base b incognita)</li>")
     report.append("</ul></div>")
 
     # ==========================================
@@ -2794,15 +2833,18 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
                 f"<tr><td><b>Asta {el['id']}</b></td><td>{float(L):.2f}</td>"
                 f"<td><span class='formula'>{pulisci_formula(M0_expr, decimale=True)}</span></td>"
                 f"<td><span class='formula'>{pulisci_formula(M1_expr, decimale=True)}</span></td>"
-                f"<td>{fmt_num(float(sp.N(d10_t)), 3)}</td>"
-                f"<td>{fmt_num(float(sp.N(d11_t)), 3)}</td></tr>"
+                f"<td>{fmt_smart(float(sp.N(d10_t)), min_sig=4)}</td>"
+                f"<td>{fmt_smart(float(sp.N(d11_t)), min_sig=4)}</td></tr>"
             )
         delta_10 = sp.simplify(delta_10); delta_11 = sp.simplify(delta_11)
+        d10_num = float(sp.N(delta_10)); d11_num = float(sp.N(delta_11))
+        d10_mohr = fmt_smart(d10_num, min_sig=4)
+        d11_mohr = fmt_smart(d11_num, min_sig=4)
         rows_mohr.append(
             f"<tr style='background-color:#eef4ff; font-weight:bold;'>"
             f"<td colspan='4' style='text-align:right;'>Totale:</td>"
-            f"<td>{fmt_num(float(sp.N(delta_10)), 3)}</td>"
-            f"<td>{fmt_num(float(sp.N(delta_11)), 3)}</td></tr>"
+            f"<td>{d10_mohr}</td>"
+            f"<td>{d11_mohr}</td></tr>"
         )
         report.append(_tabella_html([
             "Asta", "L [m]", "M<sub>0</sub>(s) [N&middot;m]", "M<sub>1</sub>(s)",
@@ -2814,14 +2856,13 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
             stop("Calcolo impossibile: &delta;<sub>11</sub> = 0",
                  "L'incognita iperstatica scelta non produce momento flettente in S<sub>1</sub> (M<sub>1</sub> &equiv; 0). Scegli un'altra incognita.")
 
-        d10_num = float(sp.N(delta_10)); d11_num = float(sp.N(delta_11))
         un_d10 = "rad" if tipo_svinc in ('M', 'M_int') else "m"
         un_d11 = "rad/(N&middot;m)" if tipo_svinc in ('M', 'M_int') else "m/N"
-        extra_d10 = f" = <b>{fmt_sci_html(d10_num / float(EI_val))} {un_d10}</b>" if ei_noto_reale else ""
-        extra_d11 = f" = <b>{fmt_sci_html(d11_num / float(EI_val))} {un_d11}</b>" if ei_noto_reale else ""
+        extra_d10 = f" = <b>{fmt_smart(d10_num / float(EI_val), min_sig=4)} {un_d10}</b>" if ei_noto_reale else ""
+        extra_d11 = f" = <b>{fmt_smart(d11_num / float(EI_val), min_sig=4)} {un_d11}</b>" if ei_noto_reale else ""
         report.append("<div style='padding: 12px 15px; border: 1px dashed #6c757d; margin-bottom: 18px; background-color: #ffffff;'>")
-        report.append(f"<b>&delta;<sub>10</sub></b> = <span class='formula'>{fmt_num(d10_num, 3).replace('-', '&minus;')} / EI</span>{extra_d10}<br>")
-        report.append(f"<b>&delta;<sub>11</sub></b> = <span class='formula'>{fmt_num(d11_num, 3).replace('-', '&minus;')} / EI</span>{extra_d11}</div>")
+        report.append(f"<b>&delta;<sub>10</sub></b> = <span class='formula'>{d10_mohr.replace('-', '&minus;')} / EI</span>{extra_d10}<br>")
+        report.append(f"<b>&delta;<sub>11</sub></b> = <span class='formula'>{d11_mohr.replace('-', '&minus;')} / EI</span>{extra_d11}</div>")
 
         # --- DISTORSIONI (cedimenti vincolari e termiche) ---
         alpha_mat = ex(dati_json.get('material', {}).get('alpha', 0))
@@ -2844,8 +2885,8 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
             termine_T += kappa_T * int_M1
             KT_sum += alpha_t * (T_pos - T_neg) * int_M1
             termine_N += eps_T * int_N1
-            righe_term.append(f"Asta {eid}: &kappa;<sub>T</sub> = {fmt_sci_html(float(kappa_T))} m<sup>&minus;1</sup> &rarr; &int;M<sub>1</sub>&kappa;<sub>T</sub>ds = {fmt_sci_html(float(kappa_T*int_M1))}"
-                              + (f"; &epsilon;<sub>T</sub> = {fmt_sci_html(float(eps_T))} &rarr; &int;N<sub>1</sub>&epsilon;<sub>T</sub>ds = {fmt_sci_html(float(eps_T*int_N1))}" if abs(eps_T) > 0 else ""))
+            righe_term.append(f"Asta {eid}: &kappa;<sub>T</sub> = {fmt_sci_html(float(kappa_T), sig=4)} m<sup>&minus;1</sup> &rarr; &int;M<sub>1</sub>&kappa;<sub>T</sub>ds = {fmt_smart(float(kappa_T*int_M1), min_sig=4)}"
+                              + (f"; &epsilon;<sub>T</sub> = {fmt_sci_html(float(eps_T), sig=4)} &rarr; &int;N<sub>1</sub>&epsilon;<sub>T</sub>ds = {fmt_smart(float(eps_T*int_N1), min_sig=4)}" if abs(eps_T) > 0 else ""))
 
         sup_map = {}
         for s_ in dati_json.get('supports', []):
@@ -2862,7 +2903,7 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
                 R1v = ex(soluzione_S1.get(r_['sym'], 0))
                 somma_Rd += R1v * dval
                 u_d = "rad" if r_['tipo'] == 'M' else "m"
-                righe_ced.append(f"Nodo {r_['nodo']} ({sym_reaz_html(r_['sym'])}): R<sub>1</sub> = {fmt_num(float(R1v), 2)}, &delta;<sub>c</sub> = {fmt_sci_html(float(dval))} {u_d} &rarr; R<sub>1</sub>&middot;&delta;<sub>c</sub> = {fmt_sci_html(float(R1v*dval))} {un_d10}")
+                righe_ced.append(f"Nodo {r_['nodo']} ({sym_reaz_html(r_['sym'])}): R<sub>1</sub> = {fmt_smart(float(R1v))}, &delta;<sub>c</sub> = {fmt_smart(float(dval), fixed_min=1e-4)} {u_d} &rarr; R<sub>1</sub>&middot;&delta;<sub>c</sub> = {fmt_smart(float(R1v*dval), fixed_min=1e-4)} {un_d10}")
         eta_X1 = sp.Integer(0)
         if tipo_svinc == 'Fn' and idx_X1_sup is not None:
             eta_X1 = ex(supports_n[idx_X1_sup].get('delta_n', 0))
@@ -2870,7 +2911,7 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
             eta_X1 = ex(sup_map.get(nodo_svinc, {}).get(chiavi_delta[tipo_svinc], 0))
         if eta_X1 != 0:
             u_x = "rad" if tipo_svinc in ('M', 'M_int') else "m"
-            righe_ced.append(f"Vincolo degradato X<sub>1</sub> (Nodo {nodo_svinc}): R<sub>1</sub> = 1, &delta;<sub>c</sub> = {fmt_sci_html(float(eta_X1))} {u_x} &rarr; 1&middot;&delta;<sub>c</sub> = {fmt_sci_html(float(eta_X1))} {un_d10}")
+            righe_ced.append(f"Vincolo degradato X<sub>1</sub> (Nodo {nodo_svinc}): R<sub>1</sub> = 1, &delta;<sub>c</sub> = {fmt_smart(float(eta_X1), fixed_min=1e-4)} {u_x} &rarr; 1&middot;&delta;<sub>c</sub> = {fmt_smart(float(eta_X1), fixed_min=1e-4)} {un_d10}")
 
         L_ev_exact = eta_X1 + somma_Rd
         ha_distorsioni = bool(righe_term or righe_ced)
@@ -2884,7 +2925,7 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
             report.append("<b>Lavoro esterno virtuale per cedimenti vincolari (L<sub>ev</sub> = &Sigma; R<sub>1,k</sub>&middot;&delta;<sub>c,k</sub>):</b><ul style='margin:4px 0 8px 0;'>")
             for r_txt in righe_ced:
                 report.append(f"<li>{r_txt}</li>")
-            report.append(f"</ul><b>L<sub>ev</sub> = {fmt_sci_html(float(L_ev_exact))} {un_d10}</b><br><br>")
+            report.append(f"</ul><b>L<sub>ev</sub> = {fmt_smart(float(L_ev_exact), fixed_min=1e-4)} {un_d10}</b><br><br>")
         if righe_term:
             report.append("<b>Contributo variazioni termiche:</b><ul style='margin:4px 0 8px 0;'>")
             for r_txt in righe_term:
@@ -2902,23 +2943,31 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
         X1_valore_numerico = float(X1_exact)
         unita_X1 = "N&middot;m" if tipo_svinc in ('M', 'M_int') else "N"
 
+        d10_eq = d10_mohr.replace('-', '&minus;')
+        d11_eq = d11_mohr.replace('-', '&minus;')
+        x1_str = fmt_smart(X1_valore_numerico)
+        x1_eq = x1_str.replace('-', '&minus;')
+
         if righe_term:
+            tnoto_num = float(sp.N(termine_noto_dist))
+            tnoto_eq = fmt_smart(tnoto_num, min_sig=4).replace('-', '&minus;')
             report.append("<b>Equazione di congruenza:</b><br>"
                           "<span class='formula'>(&delta;<sub>10</sub> + X<sub>1</sub>&middot;&delta;<sub>11</sub>)/EI + &int;M<sub>1</sub>&kappa;<sub>T</sub>ds + &int;N<sub>1</sub>&epsilon;<sub>T</sub>ds = L<sub>ev</sub></span><br>"
-                          f"<span class='formula'>X<sub>1</sub> = [EI&middot;(L<sub>ev</sub> &minus; L<sub>th</sub>) &minus; {fmt_num(d10_num, 2)}] / {fmt_num(d11_num, 2)} = {fmt_num(X1_valore_numerico, 2)} {unita_X1}</span>")
+                          f"<span class='formula'>X<sub>1</sub> = [EI&middot;(L<sub>ev</sub> &minus; L<sub>th</sub>) &minus; ({d10_eq})] / {d11_eq} = ({tnoto_eq} &minus; ({d10_eq})) / {d11_eq} = {x1_eq} {unita_X1}</span>")
         elif righe_ced:
             lev_ei = float(sp.N(EI_val * L_ev_exact))
+            lev_ei_eq = fmt_smart(lev_ei, min_sig=4).replace('-', '&minus;')
             report.append("<b>Equazione di congruenza:</b><br>"
                           "<span class='formula'>(&delta;<sub>10</sub> + X<sub>1</sub>&middot;&delta;<sub>11</sub>)/EI = L<sub>ev</sub> &rArr; &delta;<sub>10</sub> + X<sub>1</sub>&middot;&delta;<sub>11</sub> = EI&middot;L<sub>ev</sub></span><br>"
-                          f"<span class='formula'>X<sub>1</sub> = ({fmt_num(lev_ei, 2)} &minus; ({fmt_num(d10_num, 2)})) / {fmt_num(d11_num, 2)} = {fmt_num(X1_valore_numerico, 2)} {unita_X1}</span>")
+                          f"<span class='formula'>X<sub>1</sub> = ({lev_ei_eq} &minus; ({d10_eq})) / {d11_eq} = {x1_eq} {unita_X1}</span>")
         else:
             report.append("<b>Equazione di congruenza (vincoli rigidi, nessun cedimento):</b><br>"
                           "<span class='formula'>&delta;<sub>10</sub> + X<sub>1</sub> &middot; &delta;<sub>11</sub> = 0 &rArr; X<sub>1</sub> = &minus;&delta;<sub>10</sub> / &delta;<sub>11</sub></span><br>"
-                          f"<span class='formula'>X<sub>1</sub> = &minus;({fmt_num(d10_num, 2)}) / {fmt_num(d11_num, 2)} = {fmt_num(X1_valore_numerico, 2)} {unita_X1}</span>")
+                          f"<span class='formula'>X<sub>1</sub> = &minus;({d10_eq}) / {d11_eq} = {x1_eq} {unita_X1}</span>")
         report.append("</div>")
         report.append(
             "<div style='background-color:#d1e7dd; color:#0f5132; padding:12px 15px; border-left: 5px solid #198754; border-radius: 4px; margin-bottom: 18px;'>"
-            f"<span style='font-size:18px;'><b>X<sub>1</sub> = {fmt_num(X1_valore_numerico, 2)} {unita_X1}</b></span></div>"
+            f"<span style='font-size:18px;'><b>X<sub>1</sub> = {x1_str} {unita_X1}</b></span></div>"
         )
     else:
         unita_X1 = "N"
@@ -3191,7 +3240,7 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
                 A_req = abs(Np) / sigma_t_p; info_p['A_req'] = A_req
                 if forma == 'rettangolare': info_p.update({'b': math.sqrt(A_req/k_rett), 'h': k_rett*math.sqrt(A_req/k_rett)})
                 elif forma == 'circolare': info_p['d'] = math.sqrt(4*A_req/math.pi)
-                righe_sez.append(f"<p><b>{rf['nome']} (nodo {rf['nodo']}):</b> {funz} &mdash; A {op_p} {fmt_sci_html(A_req)} m&sup2; ({A_req*1e4:.2f} cm&sup2;)</p>")
+                righe_sez.append(f"<p><b>{rf['nome']} (nodo {rf['nodo']}):</b> {funz} &mdash; A {op_p} {fmt_sci_html(A_req, sig=4)} m&sup2; ({A_req*1e4:.2f} cm&sup2;)</p>")
             ULTIMI_RISULTATI['pendoli'].append(info_p)
         report.append(_tabella_html(["Pendolo", "Nodo", "Asse", "N [N]", "Funzionamento"], rows_pend, keep=True))
         report.extend(righe_sez)
@@ -3326,58 +3375,57 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
                 f"<tr>{cells}</tr></table>"
             )
 
-        report.append("<h2 style='margin-top: 26px;'>8. Sezione pi&ugrave; sollecitata e verifica di resistenza (Navier)</h2>")
+        report.append("<h2 style='margin-top: 26px;'>8. Sezione pi&ugrave; sollecitata e verifica di resistenza (Punto 3 &mdash; Navier)</h2>")
 
-        if not in_progetto:
-            # ==========================================
-            # RAMO VERIFICA (termina in Sezione 8, salta Sezione 9)
-            # ==========================================
-            if ver_type == 'bending_only':
-                report.append("<p>Criterio: <b>Flessione semplice</b> (&sigma;(s) = |M(s)| / W).</p>")
-            else:
-                report.append("<p>Criterio: <b>Presso/Tensoflessione combinata</b> (&sigma;(s) = |N(s)| / A + |M(s)| / W).</p>")
-
-            top_ver = _raccogli_top_sezioni(punti_NM, lambda e_, s_, n_, m_: _sigma_punti(n_, m_), top_n=3)
-            report.append("<div style='background-color: #f8f9fa; padding: 16px; border-left: 5px solid #0a58ca; border-radius: 4px; margin-bottom: 18px;'>")
-            if asta_critica is not None:
-                if top_ver:
-                    rows_tv = []
-                    for sc_v, e_v, s_v, n_v, m_v in top_ver:
-                        is_gov = (e_v == asta_critica and abs(s_v - s_critico) < 1e-4)
-                        ruolo = "<b style='color:#0a58ca;'>Sezione critica</b>" if is_gov else "Confronto"
-                        rows_tv.append(f"<tr><td>Asta {e_v}</td><td>{fmt_num(s_v, 2)}</td><td>{fmt_num(n_v, 2)}</td><td>{fmt_num(m_v, 2)}</td><td><b>{sc_v/1e6:.2f}</b></td><td>{ruolo}</td></tr>")
-                    report.append(_tabella_html(["Asta", "s [m]", "|N| [N]", "|M| [N&middot;m]", "&sigma; [MPa]", "Ruolo"], rows_tv, keep=True))
-                report.append(f"<p>La tensione normale massima si raggiunge nell'<b>Asta {asta_critica}</b> a <b>s = {fmt_num(s_critico, 2)} m</b> "
-                              f"(|N| = {fmt_num(abs(N_in_s_critico), 2)} N, |M| = {fmt_num(abs(M_in_s_critico), 2)} N&middot;m).</p>")
-            else:
-                report.append("<p>Sollecitazioni nulle su tutta la struttura.</p>")
-
-            _area_h = fmt_num(Area, 4) if Area >= 1e-3 else fmt_sci_html(Area)
-            report.append(f"<p>Sezione assegnata: b = {fmt_num(b_sec, 3)} m, h = {fmt_num(h_sec, 3)} m &rarr; "
-                          f"A = {_area_h} m<sup>2</sup>, W = b&middot;h<sup>2</sup>/6 = {fmt_sci_html(W_f)} m<sup>3</sup>, "
-                          f"&sigma;<sub>amm</sub> = {fmt_num(sigma_amm/1e6, 2)} MPa.</p>")
-            report.append("<div style='margin: 10px 0 14px 0;'>")
-            if ver_type == 'bending_only':
-                report.append(f"<span class='formula' style='color:#000000;'>&sigma;<sub>max</sub> = |M| / W = {fmt_num(abs(M_in_s_critico), 2)} / ({fmt_sci_html(W_f)}) = <b>{max_sigma_calcolata/1e6:.2f} MPa</b></span><br><br>")
-            else:
-                report.append(f"<span class='formula' style='color:#000000;'>&sigma;<sub>max</sub> = |N|/A + |M|/W = {fmt_num(abs(N_in_s_critico), 2)}/({_area_h}) + {fmt_num(abs(M_in_s_critico), 2)}/({fmt_sci_html(W_f)}) = <b>{max_sigma_calcolata/1e6:.2f} MPa</b></span><br><br>")
-            if MS != float('inf'):
-                report.append(f"<span class='formula' style='color:#000000;'>MS = (&sigma;<sub>amm</sub> / &sigma;<sub>max</sub>) &minus; 1 = {sigma_amm/1e6:.2f} / {max_sigma_calcolata/1e6:.2f} &minus; 1 = <b>{MS:.2f}</b></span>")
-            else:
-                report.append("<span class='formula' style='color:#000000;'>MS = &infin;</span>")
-            report.append("</div>")
-
-            if is_verified:
-                report.append("<div style='text-align:center; padding:14px; background-color:#d1e7dd; color:#0f5132; border: 2px solid #198754; font-size: 16px; border-radius: 6px;'>")
-                report.append(f"<b>MS = {MS:.2f} {op_html} {MS_target:.2f}</b><br>VERIFICATA &#10004;</div>")
-            else:
-                report.append("<div style='text-align:center; padding:14px; background-color:#f8d7da; color:#842029; border: 2px solid #dc3545; font-size: 16px; border-radius: 6px;'>")
-                report.append(f"<b>MS = {MS:.2f} (Richiesto {op_html} {MS_target:.2f})</b><br>NON VERIFICATA &#10008;</div>")
-            report.append("</div>")
-
+        # ==========================================
+        # PUNTO 3: VERIFICA SEMPRE ESEGUITA SULLA SEZIONE ASSEGNATA
+        # ==========================================
+        if ver_type == 'bending_only':
+            report.append("<p>Criterio: <b>Flessione semplice</b> (&sigma;(s) = |M(s)| / W).</p>")
         else:
+            report.append("<p>Criterio: <b>Presso/Tensoflessione combinata</b> (&sigma;(s) = |N(s)| / A + |M(s)| / W).</p>")
+
+        top_ver = _raccogli_top_sezioni(punti_NM, lambda e_, s_, n_, m_: _sigma_punti(n_, m_), top_n=3)
+        report.append("<div class='keep-together' style='background-color: #f8f9fa; padding: 14px 16px; border-left: 5px solid #0a58ca; border-radius: 4px; margin-bottom: 16px; page-break-inside: avoid;'>")
+        if asta_critica is not None:
+            if top_ver:
+                rows_tv = []
+                for sc_v, e_v, s_v, n_v, m_v in top_ver:
+                    is_gov = (e_v == asta_critica and abs(s_v - s_critico) < 1e-4)
+                    ruolo = "<b style='color:#0a58ca;'>Sezione critica</b>" if is_gov else "Confronto"
+                    rows_tv.append(f"<tr><td>Asta {e_v}</td><td>{fmt_num(s_v, 2)}</td><td>{fmt_num(n_v, 2)}</td><td>{fmt_num(m_v, 2)}</td><td><b>{fmt_smart(sc_v/1e6)}</b></td><td>{ruolo}</td></tr>")
+                report.append(_tabella_html(["Asta", "s [m]", "|N| [N]", "|M| [N&middot;m]", "&sigma; [MPa]", "Ruolo"], rows_tv, keep=True, compact=True))
+            report.append(f"<p>La tensione normale massima si raggiunge nell'<b>Asta {asta_critica}</b> a <b>s = {fmt_num(s_critico, 2)} m</b> "
+                          f"(|N| = {fmt_num(abs(N_in_s_critico), 2)} N, |M| = {fmt_num(abs(M_in_s_critico), 2)} N&middot;m).</p>")
+        else:
+            report.append("<p>Sollecitazioni nulle su tutta la struttura.</p>")
+
+        _area_h = fmt_smart(Area, min_sig=4)
+        report.append(f"<p>Sezione assegnata: b = {fmt_smart(b_sec)} m, h = {fmt_smart(h_sec)} m &rarr; "
+                      f"A = {_area_h} m<sup>2</sup>, W = b&middot;h<sup>2</sup>/6 = {fmt_sci_html(W_f, sig=4)} m<sup>3</sup>, "
+                      f"&sigma;<sub>amm</sub> = {fmt_smart(sigma_amm/1e6)} MPa.</p>")
+        report.append("<div style='margin: 8px 0 12px 0;'>")
+        if ver_type == 'bending_only':
+            report.append(f"<span class='formula' style='color:#000000;'>&sigma;<sub>max</sub> = |M| / W = {fmt_num(abs(M_in_s_critico), 2)} / ({fmt_sci_html(W_f, sig=4)}) = <b>{fmt_smart(max_sigma_calcolata/1e6)} MPa</b></span><br><br>")
+        else:
+            report.append(f"<span class='formula' style='color:#000000;'>&sigma;<sub>max</sub> = |N|/A + |M|/W = {fmt_num(abs(N_in_s_critico), 2)}/({_area_h}) + {fmt_num(abs(M_in_s_critico), 2)}/({fmt_sci_html(W_f, sig=4)}) = <b>{fmt_smart(max_sigma_calcolata/1e6)} MPa</b></span><br><br>")
+        if MS != float('inf'):
+            report.append(f"<span class='formula' style='color:#000000;'>MS = (&sigma;<sub>amm</sub> / &sigma;<sub>max</sub>) &minus; 1 = {fmt_smart(sigma_amm/1e6)} / {fmt_smart(max_sigma_calcolata/1e6)} &minus; 1 = <b>{fmt_num(MS, 2)}</b></span>")
+        else:
+            report.append("<span class='formula' style='color:#000000;'>MS = &infin;</span>")
+        report.append("</div>")
+
+        if is_verified:
+            report.append("<div style='text-align:center; padding:12px; background-color:#d1e7dd; color:#0f5132; border: 2px solid #198754; font-size: 16px; border-radius: 6px;'>")
+            report.append(f"<b>MS = {fmt_num(MS, 2)} {op_html} {fmt_num(MS_target, 2)}</b> (MS verifica punto 3)<br>VERIFICATA &#10004;</div>")
+        else:
+            report.append("<div style='text-align:center; padding:12px; background-color:#f8d7da; color:#842029; border: 2px solid #dc3545; font-size: 16px; border-radius: 6px;'>")
+            report.append(f"<b>MS = {fmt_num(MS, 2)} (Richiesto {op_html} {fmt_num(MS_target, 2)}, MS verifica punto 3)</b><br>NON VERIFICATA &#10008;</div>")
+        report.append("</div>")
+
+        if in_progetto:
             # ==========================================
-            # RAMO DIMENSIONAMENTO: Sezione 8 (Confronto sezioni candidate) + Sezione 9 (Cubica e soluzione)
+            # PUNTO 4: DIMENSIONAMENTO (SEZIONE 9)
             # ==========================================
             sigma_amm_val = float(dati_json.get('material', {}).get('sigma_amm', 235e6))
             sigma_target_val = sigma_amm_val / (1 + MS_d_target) if 1 + MS_d_target > 1e-9 else float('nan')
@@ -3504,43 +3552,38 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
                 asta_gov, s_gov = asta_critica, s_critico
             sei_Me = 6 * M_E_abs
 
-            def _score_dim(e_, sv_, nv_, mv_):
-                n_use = np.abs(nv_) if combinato else np.zeros_like(nv_)
-                if design == 'b': return (n_use * h_sec + 6 * np.abs(mv_))
-                if design == 'h': return (n_use + np.sqrt(n_use**2 + 24 * max(sigma_target_val, 1.0) * b_sec * np.abs(mv_)))
-                k_u = ratio_k if ratio_k > 0 else 1.0
-                return np.cbrt(6 * np.abs(mv_) / k_u**2 + 1.0) + np.sqrt(n_use / k_u + 1.0) * 0.01
+            # ==========================================
+            # SEZIONE 9: DIMENSIONAMENTO DELLA SEZIONE (PUNTO 4)
+            # ==========================================
+            report.append("<h2 style='margin-top: 24px;'>9. Dimensionamento della sezione (Punto 4)</h2>")
+            report.append("<div class='keep-together' style='background-color: #f8f9fa; padding: 14px 16px; border-left: 5px solid #0a58ca; border-radius: 4px; margin-bottom: 18px; page-break-inside: avoid;'>")
+            sigma_target_html = fmt_sci_html(sigma_target_val, sig=4) if sigma_target_val == sigma_target_val else "n.d."
+            bl_style = "border-left: 3px solid #0d6efd; background-color: #ffffff; padding: 10px 15px; margin: 10px 0 14px 0;"
 
-            top_dim = _raccogli_top_sezioni(punti_NM, _score_dim, top_n=3)
-            report.append("<div style='background-color: #f8f9fa; padding: 14px 16px; border-left: 5px solid #0a58ca; border-radius: 4px; margin-bottom: 18px;'>")
-            if top_dim:
-                rows_td = []
-                for _, e_v, s_v, n_v, m_v in top_dim:
-                    is_gov = (asta_gov is not None and e_v == asta_gov and abs(s_v - s_gov) < 1e-3)
-                    ruolo = "<b style='color:#0a58ca;'>Sezione critica governante</b>" if is_gov else "Sezione candidata"
-                    rows_td.append(f"<tr><td>Asta {e_v}</td><td>{fmt_num(s_v, 2)}</td><td>{fmt_num(n_v, 2)}</td><td>{fmt_num(m_v, 2)}</td><td>{ruolo}</td></tr>")
-                report.append(_tabella_html(["Asta", "s [m]", "|N| [N]", "|M| [N&middot;m]", "Ruolo"], rows_td, keep=True))
             if asta_gov is not None:
-                report.append(f"<p>La sezione che governa il dimensionamento &egrave; nell'<b>Asta {asta_gov}</b> a <b>s = {fmt_num(s_gov, 2)} m</b> "
-                              f"(|N<sub>E</sub>| = {fmt_num(N_E_abs, 2)} N, |M<sub>E</sub>| = {fmt_num(M_E_abs, 2)} N&middot;m). "
-                              "Si procede direttamente al dimensionamento alla Sezione 9.</p>")
-            report.append("</div>")
+                stessa_crit = (asta_critica is not None and asta_gov == asta_critica and abs(s_gov - s_critico) < 1e-3)
+                if stessa_crit:
+                    report.append(
+                        f"<p style='margin:0 0 8px 0;'>Sezione critica governante (invariata rispetto al Punto 3): "
+                        f"<b>Asta {asta_gov}</b> a <b>s = {fmt_num(s_gov, 2)} m</b> "
+                        f"(|N<sub>E</sub>| = {fmt_num(N_E_abs, 2)} N, |M<sub>E</sub>| = {fmt_num(M_E_abs, 2)} N&middot;m).</p>"
+                    )
+                else:
+                    report.append(
+                        f"<p style='margin:0 0 8px 0; color:#664d03; background-color:#fff3cd; padding:6px 10px; border-left:3px solid #ffc107;'>"
+                        f"<b>Cambio della sezione critica rispetto al Punto 3:</b> al variare delle dimensioni della sezione "
+                        f"il dimensionamento &egrave; governato dall'<b>Asta {asta_gov}</b> a <b>s = {fmt_num(s_gov, 2)} m</b> "
+                        f"(|N<sub>E</sub>| = {fmt_num(N_E_abs, 2)} N, |M<sub>E</sub>| = {fmt_num(M_E_abs, 2)} N&middot;m) "
+                        f"invece che dall'Asta {asta_critica} (s = {fmt_num(s_critico, 2)} m).</p>"
+                    )
 
-            # ==========================================
-            # SEZIONE 9: DIMENSIONAMENTO DELLA SEZIONE
-            # ==========================================
-            report.append("<h2 style='margin-top: 24px;'>9. Dimensionamento della sezione</h2>")
-            report.append("<div style='background-color: #f8f9fa; padding: 16px; border-left: 5px solid #0a58ca; border-radius: 4px; margin-bottom: 20px;'>")
-            sigma_target_html = fmt_sci_html(sigma_target_val) if sigma_target_val == sigma_target_val else "n.d."
-            bl_style = "border-left: 3px solid #0d6efd; background-color: #ffffff; padding: 10px 15px; margin: 10px 0 15px 0;"
-
-            report.append(f"<p>Imponendo il requisito sul margine di sicurezza (<b>MS {op_html_d} {fmt_num(MS_d_target, 2)}</b>) e la formula di Navier con <i>A = b&middot;h</i> e <i>W = b&middot;h<sup>2</sup>/6</i>:</p>")
+            report.append(f"<p>Imponendo il requisito sul margine di sicurezza richiesto (Punto 4: <b>MS {op_html_d} {fmt_num(MS_d_target, 2)}</b>) e la formula di Navier con <i>A = b&middot;h</i> e <i>W = b&middot;h<sup>2</sup>/6</i>:</p>")
             report.append(f"<div style=\"{bl_style}\">")
             report.append(eq_table(f"MS {op_html_d} {fmt_num(MS_d_target, 2)} &rArr;",
                                    _frac_html("&sigma;<sub>amm</sub>", "&sigma;<sub>max</sub>", "#000000"),
                                    f"&minus; 1 {op_html_d} {fmt_num(MS_d_target, 2)} &rArr; &sigma;<sub>max</sub> {sigma_op_html_d}",
                                    _frac_html("&sigma;<sub>amm</sub>", f"1 + {fmt_num(MS_d_target, 2)}", "#000000"),
-                                   f"= {fmt_num(sigma_target_val/1e6, 2)} MPa ({sigma_target_html} Pa)"))
+                                   f"= {fmt_smart(sigma_target_val/1e6)} MPa ({sigma_target_html} Pa)"))
             if ver_type == 'bending_only':
                 report.append(eq_table("&sigma;<sub>max</sub> =", _frac_html("|M<sub>E</sub>|", "W", "#000000"), "=",
                                        _frac_html("6&middot;|M<sub>E</sub>|", "b&middot;h<sup>2</sup>", "#000000"), "=",
@@ -3575,13 +3618,13 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
                     ineq_pol = "&ge;" if MS_d_op in (">", ">=") else ("&le;" if MS_d_op in ("<", "<=") else "=")
                     report.append(f"<p style='margin:0 0 6px 0;'>Con <b>b = {fmt_num(b_sec, 3)} m</b> fissata si ottiene l'equazione in <i>h</i>:</p>")
                     if combinato and N_E_abs > 1e-9:
-                        report.append(eq_table(f"(&sigma;<sub>t</sub>&middot;b)&middot;h<sup>2</sup> &minus; |N<sub>E</sub>|&middot;h &minus; 6|M<sub>E</sub>| {ineq_pol} 0 &rArr; {fmt_sci_html(sigma_target_val * b_sec)}&middot;h<sup>2</sup> &minus; {fmt_num(N_E_abs, 2)}&middot;h &minus; {fmt_num(sei_Me, 2)} {ineq_pol} 0"))
+                        report.append(eq_table(f"(&sigma;<sub>t</sub>&middot;b)&middot;h<sup>2</sup> &minus; |N<sub>E</sub>|&middot;h &minus; 6|M<sub>E</sub>| {ineq_pol} 0 &rArr; {fmt_sci_html(sigma_target_val * b_sec, sig=4)}&middot;h<sup>2</sup> &minus; {fmt_num(N_E_abs, 2)}&middot;h &minus; {fmt_num(sei_Me, 2)} {ineq_pol} 0"))
                     else:
-                        report.append(eq_table(f"(&sigma;<sub>t</sub>&middot;b)&middot;h<sup>2</sup> &minus; 6|M<sub>E</sub>| {ineq_pol} 0 &rArr; {fmt_sci_html(sigma_target_val * b_sec)}&middot;h<sup>2</sup> &minus; {fmt_num(sei_Me, 2)} {ineq_pol} 0"))
+                        report.append(eq_table(f"(&sigma;<sub>t</sub>&middot;b)&middot;h<sup>2</sup> &minus; 6|M<sub>E</sub>| {ineq_pol} 0 &rArr; {fmt_sci_html(sigma_target_val * b_sec, sig=4)}&middot;h<sup>2</sup> &minus; {fmt_num(sei_Me, 2)} {ineq_pol} 0"))
                 else:
                     report.append(f"<p style='margin:0 0 6px 0;'>Con <b>h = {fmt_num(h_sec, 3)} m</b> fissata si ricava direttamente <i>b</i>:</p>")
                     num_b = f"{fmt_num(h_sec, 3)}&middot;{fmt_num(N_E_abs, 2)} + {fmt_num(sei_Me, 2)}" if combinato else f"{fmt_num(sei_Me, 2)}"
-                    report.append(eq_table(f"b {op_html_d}", _frac_html(num_b, f"{fmt_sci_html(sigma_target_val * h_sec**2)}", "#000000")))
+                    report.append(eq_table(f"b {op_html_d}", _frac_html(num_b, f"{fmt_sci_html(sigma_target_val * h_sec**2, sig=4)}", "#000000")))
                 report.append("</div>")
 
             lett_attiva = (dip_ced and not EI_dir) or dip_term
@@ -3622,7 +3665,7 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
                                 if isinstance(f_, sp.Pow): vp_.append(f"{f_.base}<sup>{f_.exp}</sup>")
                                 elif f_ != 1: vp_.append(str(f_))
                             mon_ = "".join(vp_)
-                            c_str = fmt_sci_html(abs(c_))
+                            c_str = fmt_sci_html(abs(c_), sig=4)
                             sep = "&middot;" if mon_ else ""
                             out_ += f" {'+' if c_ >= 0 else '&minus;'} {c_str}{sep}{mon_}"
                         out_ = out_.strip()
@@ -3644,23 +3687,23 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
             elif esito_design is not None:
                 b_ref, h_ref, MS_c = esito_design['b'], esito_design['h'], esito_design['MS_c']
                 if esito_design.get('distorsioni'):
-                    report.append(f"<p>Per la sezione progettata con distorsioni imposte: <b>X<sub>1</sub> = {fmt_num(esito_design['X1'], 2)} {unita_X1}</b> "
+                    report.append(f"<p>Per la sezione progettata con distorsioni imposte: <b>X<sub>1</sub> = {fmt_smart(esito_design['X1'])} {unita_X1}</b> "
                                   f"(sezione critica: Asta {esito_design['asta']}, s = {fmt_num(esito_design['s'], 2)} m).</p>")
                     esito = esito_design['testo']
                     if design == 'ratio':
-                        esito += f"<br><small>(con h = {fmt_num(ratio_k, 2)}&middot;b; per b<sub>min</sub> = {b_ref:.4f} m: h<sub>min</sub> = {h_ref:.4f} m)</small>"
+                        esito += f"<br><small>(con h = {fmt_smart(ratio_k)}&middot;b; per b<sub>min</sub> = {b_ref:.4f} m: h<sub>min</sub> = {h_ref:.4f} m)</small>"
                     elif design == 'b':
-                        esito += f"<br><small>(con h = {fmt_num(h_sec, 3)} m assegnata)</small>"
+                        esito += f"<br><small>(con h = {fmt_smart(h_sec)} m assegnata)</small>"
                     else:
-                        esito += f"<br><small>(con b = {fmt_num(b_sec, 3)} m assegnata)</small>"
+                        esito += f"<br><small>(con b = {fmt_smart(b_sec)} m assegnata)</small>"
                 elif design == 'b':
-                    esito = f"b<sub>min</sub> = {b_ref:.4f} m ({b_ref*100:.2f} cm) &rArr; b {op_html_d} {b_ref:.4f} m &nbsp;(h = {fmt_num(h_sec, 3)} m)"
+                    esito = f"b<sub>min</sub> = {b_ref:.4f} m ({b_ref*100:.2f} cm) &rArr; b {op_html_d} {b_ref:.4f} m &nbsp;(h = {fmt_smart(h_sec)} m)"
                 elif design == 'h':
-                    esito = f"h<sub>min</sub> = {h_ref:.4f} m ({h_ref*100:.2f} cm) &rArr; h {op_html_d} {h_ref:.4f} m &nbsp;(b = {fmt_num(b_sec, 3)} m)"
+                    esito = f"h<sub>min</sub> = {h_ref:.4f} m ({h_ref*100:.2f} cm) &rArr; h {op_html_d} {h_ref:.4f} m &nbsp;(b = {fmt_smart(b_sec)} m)"
                 else:
-                    esito = f"b<sub>min</sub> = {b_ref:.4f} m ({b_ref*100:.2f} cm), &nbsp;h<sub>min</sub> = {fmt_num(ratio_k, 2)}&middot;b<sub>min</sub> = {h_ref:.4f} m ({h_ref*100:.2f} cm)"
-                report.append("<div style='text-align:center; padding:15px; background-color:#d1e7dd; color:#0f5132; border: 2px solid #198754; font-size: 16px; margin-top: 10px; border-radius: 6px;'>")
-                report.append(f"<b>{esito}</b><br><small>Controllo finale: MS = {MS_c:.2f}</small></div>")
+                    esito = f"b<sub>min</sub> = {b_ref:.4f} m ({b_ref*100:.2f} cm), &nbsp;h<sub>min</sub> = {fmt_smart(ratio_k)}&middot;b<sub>min</sub> = {h_ref:.4f} m ({h_ref*100:.2f} cm)"
+                report.append("<div style='text-align:center; padding:12px 15px; background-color:#d1e7dd; color:#0f5132; border: 2px solid #198754; font-size: 16px; margin-top: 10px; border-radius: 6px;'>")
+                report.append(f"<b>{esito}</b><br><small>Controllo finale: MS = {fmt_num(MS_c, 2)} (MS<sub>req</sub> {op_html_d} {fmt_num(MS_d_target, 2)})</small></div>")
                 ULTIMI_RISULTATI['dimensionamento'] = dict(esito_design)
             report.append("</div>")
 

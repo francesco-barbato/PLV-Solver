@@ -247,15 +247,18 @@ def impagina_documento_pdf(doc, printer):
                         changed = True
                         break
 
-            # 1b. KeepTogether sezione corta h2 ("2. ...") + suoi paragrafi consecutivi prima del prossimo h2
-            if kind == 'block' and obj.blockFormat().headingLevel() == 2 and obj.text().strip().startswith("2. "):
+            # 1b. KeepTogether sezioni compatte h2 ("2. ...", "8. ...", "9. ...") con il proprio contenuto prima del prossimo h2
+            if kind == 'block' and obj.blockFormat().headingLevel() == 2 and obj.text().strip().startswith(("2. ", "8. ", "9. ")):
+                max_ratio = 0.45 if obj.text().strip().startswith("2. ") else 0.95
                 end_bot = bot
                 k_u = j
                 while k_u < n_len and not (nodi_doc[k_u][0] == 'block' and nodi_doc[k_u][1].blockFormat().headingLevel() == 2):
                     end_bot = nodi_doc[k_u][3]
                     k_u += 1
-                if (end_bot - top) <= 0.45 * page_h and _page(top) < _page(max(top, end_bot - 1.5)):
+                if (end_bot - top) <= max_ratio * page_h and _page(top) < _page(max(top, end_bot - 1.5)):
                     if _set_break_before(node):
+                        for m_i in range(idx + 1, k_u):
+                            _clear_break_before(nodi_doc[m_i])
                         changed = True
                         break
 
@@ -969,7 +972,7 @@ class UIStrutture(QMainWindow):
         # Modulo di Young E
         grid_props.addWidget(QLabel("E (Pa):"), 0, 0)
         self.spin_E = QDoubleSpinBox()
-        self.spin_E.setRange(1e9, 1e12)
+        self.spin_E.setRange(1e9, 1e15)
         self.spin_E.setValue(2.1e11)  # Default Acciaio
         self.spin_E.setDecimals(1)
         grid_props.addWidget(self.spin_E, 0, 1)
@@ -977,7 +980,7 @@ class UIStrutture(QMainWindow):
         # Tensione ammissibile sigma_amm
         grid_props.addWidget(QLabel("Sigma amm (Pa):"), 1, 0)
         self.spin_sigma = QDoubleSpinBox()
-        self.spin_sigma.setRange(1e6, 1e9)
+        self.spin_sigma.setRange(1e6, 1e12)
         self.spin_sigma.setValue(235e6)  # Default S235
         grid_props.addWidget(self.spin_sigma, 1, 1)
         
