@@ -1848,11 +1848,7 @@ class UIStrutture(QMainWindow):
         
         html_finale = f"""
         <h1>Svolgimento Metodo delle Forze (PLV)</h1>
-        <h2>Schema Generale della Struttura</h2>
-        <div style="text-align: center;"><img src="{url_s1}" width="700"></div>
         {test_report}
-        <h2>10. Diagrammi delle Sollecitazioni Finali (N, T, M)</h2>
-        <div style="text-align: center;"><img src="{url_diag}" width="750"></div>
         """
         self.html_view.setHtml(html_finale)
         self.btn_pdf.setEnabled(True)

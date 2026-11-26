@@ -6,9 +6,13 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=[],
+    hiddenimports=['matplotlib.backends.backend_qtagg', 'matplotlib.backends.backend_qt', 'PyQt6.QtPrintSupport'],
     hookspath=[],
-    hooksconfig={},
+    hooksconfig={
+        'matplotlib': {
+            'backends': ['Agg', 'QtAgg'],
+        },
+    },
     runtime_hooks=[],
     excludes=[],
     noarchive=False,

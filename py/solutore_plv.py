@@ -265,7 +265,20 @@ def risolvi_sistema_lineare(equazioni, incognite, nome, report):
         stop(f"Sistema {nome} non univocamente risolvibile", "Alcune reazioni restano espresse in funzione di altre incognite.")
     return risultato
 
-def fmt_num(val, dec=2):
+def fmt_sci_plain(val, dec=2):
+    """Notazione scientifica Unicode plain text (per Matplotlib) senza tag HTML."""
+    v = float(val)
+    if abs(v) < 1e-12:
+        return "0"
+    if 0.01 <= abs(v) < 10000:
+        return fmt_num(v, dec, plain=True)
+    sign = "-" if v < 0 else ""
+    mant, exp_s = f"{abs(v):.{dec}e}".split("e")
+    exp_i = int(exp_s)
+    sup_map = str.maketrans("0123456789-", "⁰¹²³⁴⁵⁶⁷⁸⁹⁻")
+    return f"{sign}{mant} × 10{str(exp_i).translate(sup_map)}"
+
+def fmt_num(val, dec=2, plain=False):
     """Formatta un numero reale in stringa pulita (interi senza .00, altri a `dec` cifre decimali)."""
     v = float(val)
     if abs(v) < 1e-9:
@@ -273,7 +286,7 @@ def fmt_num(val, dec=2):
     if abs(v - round(v)) < 1e-7:
         return str(int(round(v)))
     if abs(v) < 10 ** (-dec) * 0.5:
-        return fmt_sci_html(v, dec)
+        return fmt_sci_plain(v, dec) if plain else fmt_sci_html(v, dec)
     s = f"{v:.{dec}f}"
     return "0" if s in ("-0.00", "-0.0", "-0") else s
 
@@ -291,17 +304,22 @@ def fmt_sci_html(val, dec=2):
     return f"{sign}{mant} &times; 10<sup>{exp_str}</sup>"
 
 def sym_reaz_html(name):
-    """Converte nomi di reazione (H_8, V_3, M_1, Rn_7, Rn_7_2, X_1) in pedici HTML senza underscore."""
+    """Converte nomi di reazione (H_8, V_3, M_1, Rn_7, Hc_5, Vc_5, X_1) in pedici HTML senza underscore."""
     s = str(name)
     if s in ("X1", "X_1"):
         return "X<sub>1</sub>"
     parts = s.split("_")
     if len(parts) == 2:
+        if parts[0] in ("Hc", "Vc"):
+            return f"{parts[0][0]}<sub>c{parts[1]}</sub>"
         pref = "R" if parts[0] == "Rn" else parts[0]
         sub = f"n{parts[1]}" if parts[0] == "Rn" else parts[1]
         return f"{pref}<sub>{sub}</sub>"
-    if len(parts) == 3 and parts[0] == "Rn":
-        return f"R<sub>n{parts[1]}.{parts[2]}</sub>"
+    if len(parts) == 3:
+        if parts[0] in ("Hc", "Vc"):
+            return f"{parts[0][0]}<sub>c{parts[1]}.{parts[2]}</sub>"
+        if parts[0] == "Rn":
+            return f"R<sub>n{parts[1]}.{parts[2]}</sub>"
     return s.replace("_", "")
 
 def sym_reaz_mpl(name):
@@ -311,11 +329,16 @@ def sym_reaz_mpl(name):
         return r"$X_{1}$"
     parts = s.split("_")
     if len(parts) == 2:
+        if parts[0] in ("Hc", "Vc"):
+            return rf"${parts[0][0]}_{{c{parts[1]}}}$"
         pref = "R" if parts[0] == "Rn" else parts[0]
         sub = f"n{parts[1]}" if parts[0] == "Rn" else parts[1]
         return rf"${pref}_{{{sub}}}$"
-    if len(parts) == 3 and parts[0] == "Rn":
-        return rf"$R_{{n{parts[1]}.{parts[2]}}}$"
+    if len(parts) == 3:
+        if parts[0] in ("Hc", "Vc"):
+            return rf"${parts[0][0]}_{{c{parts[1]}.{parts[2]}}}$"
+        if parts[0] == "Rn":
+            return rf"$R_{{n{parts[1]}.{parts[2]}}}$"
     return s.replace("_", "")
 
 def _frac_html(num, den, border_col="#0b5ed7"):
@@ -514,34 +537,174 @@ def formatta_equazione_html(lhs_expr, rhs_str="0"):
         return _eq_table_html(*res, f"= {rhs_str}")
     return f"<span class='formula'>{res} = {rhs_str}</span>"
 
-def plot_sistema_S0(nodi, elementi, reazioni, valori_calcolati, filename, out_dir, tipo_grafico="versi", con_unita=False):
-    plt, _ = _get_mpl()
+def plot_sistema_S0(nodi, elementi, reazioni, valori_calcolati, filename, out_dir, tipo_grafico="versi", con_unita=False, cerniere_plot=None):
+    plt, patches = _get_mpl()
+    import re as _re
     nodi = {k: (float(v[0]), float(v[1])) for k, v in nodi.items()}   # solo per il disegno
-    plt.figure(figsize=(10, 5), dpi=150) # Immagine più grande e definita
-    
+    fig, ax = plt.subplots(figsize=(10, 4.4), dpi=140)
+
+    xs_n = [c[0] for c in nodi.values()]
+    ys_n = [c[1] for c in nodi.values()]
+    span_x = max(xs_n) - min(xs_n)
+    span_y = max(ys_n) - min(ys_n)
+    span_g = max(span_x, span_y, 1.0)
+    bar_lens = [math.hypot(nodi[int(e['n2'])][0] - nodi[int(e['n1'])][0],
+                           nodi[int(e['n2'])][1] - nodi[int(e['n1'])][1]) for e in elementi]
+    L_arr_ext = min(0.145 * span_g, max(0.095 * span_g, max(bar_lens + [0.5]) * 0.16))
+    off_s = 0.075 * span_g
+
+    bar_segs = [(nodi[int(e['n1'])], nodi[int(e['n2'])]) for e in elementi]
+    node_pts = list(nodi.values())
+    placed_boxes = []   # (cx, cy, hw, hh)
+    drawn_arrows = []   # ((x1, y1), (x2, y2))
+    all_x = list(xs_n)
+    all_y = list(ys_n)
+
+    def _dist_pt_seg(px, py, ax_, ay_, bx_, by_):
+        dx_, dy_ = bx_ - ax_, by_ - ay_
+        l2 = dx_ * dx_ + dy_ * dy_
+        if l2 < 1e-12:
+            return math.hypot(px - ax_, py - ay_)
+        t = max(0.0, min(1.0, ((px - ax_) * dx_ + (py - ay_) * dy_) / l2))
+        return math.hypot(px - (ax_ + t * dx_), py - (ay_ + t * dy_))
+
+    def _est_box(txt):
+        clean = _re.sub(r'[\$_{}\\]', '', txt)
+        n_ch = max(2, len(clean))
+        hw = (0.0165 * n_ch + 0.022) * span_g
+        hh = 0.042 * span_g
+        return hw, hh
+
+    def _score_box(cx, cy, hw, hh, link_x, link_y):
+        pen = 0.0
+        # 1. Collisione con altri riquadri già piazzati (con piccolo margine di sicurezza)
+        pad_b = 0.014 * span_g
+        for lx, ly, lhw, lhh in placed_boxes:
+            ox = max(0.0, (hw + lhw + pad_b) - abs(cx - lx))
+            oy = max(0.0, (hh + lhh + pad_b) - abs(cy - ly))
+            if ox > 0.0 and oy > 0.0:
+                pen += 8000.0 * (ox / span_g) * (oy / span_g) + 120.0
+        # 2. Collisione con i nodi
+        r_node = 0.072 * span_g
+        for nx0, ny0 in node_pts:
+            ox = max(0.0, (hw + r_node) - abs(cx - nx0))
+            oy = max(0.0, (hh + r_node) - abs(cy - ny0))
+            if ox > 0.0 and oy > 0.0:
+                pen += 4500.0 * (ox / span_g) * (oy / span_g) + 80.0
+        # 3. Collisione con aste strutturali (griglia 5x3 su tutto l'ingombro del riquadro)
+        sample_pts = [
+            (cx + sx * hw * 0.98, cy + sy * hh * 0.92)
+            for sx in (-1.0, -0.5, 0.0, 0.5, 1.0)
+            for sy in (-1.0, 0.0, 1.0)
+        ]
+        bar_clear = max(hh * 0.65, 0.036 * span_g)
+        for (x1, y1), (x2, y2) in bar_segs:
+            d_min = min(_dist_pt_seg(px_, py_, x1, y1, x2, y2) for px_, py_ in sample_pts)
+            if d_min < bar_clear:
+                pen += 2200.0 * ((bar_clear - d_min) / span_g) + 60.0
+        # 4. Collisione con frecce già disegnate
+        arr_clear = max(hh * 0.50, 0.028 * span_g)
+        for (ax1, ay1), (ax2, ay2) in drawn_arrows:
+            d_min = min(_dist_pt_seg(px_, py_, ax1, ay1, ax2, ay2) for px_, py_ in sample_pts)
+            if d_min < arr_clear:
+                pen += 2000.0 * ((arr_clear - d_min) / span_g) + 55.0
+        # 5. Evita se possibile che il richiamo tratteggiato tagli i nodi
+        for nx0, ny0 in node_pts:
+            if math.hypot(nx0 - link_x, ny0 - link_y) > 0.05 * span_g:
+                dn_ = _dist_pt_seg(nx0, ny0, link_x, link_y, cx, cy)
+                if dn_ < 0.045 * span_g:
+                    pen += 120.0
+        # Leggera preferenza per rimanere vicino al proprio punto di aggancio
+        pen += 8.0 * math.hypot(cx - link_x, cy - link_y) / span_g
+        return pen
+
+    def _place_label(pref_x, pref_y, link_x, link_y, label_txt, col, box_style, fontsize=8.8):
+        hw, hh = _est_box(label_txt)
+        ux_p, uy_p = pref_x - link_x, pref_y - link_y
+        lp = math.hypot(ux_p, uy_p)
+        if lp > 1e-9:
+            ux_p, uy_p = ux_p / lp, uy_p / lp
+        else:
+            ux_p, uy_p = 0.0, 1.0
+        nx_p, ny_p = -uy_p, ux_p
+
+        cands = [(pref_x, pref_y)]
+        # Offset direzionali intorno all'uscita della freccia
+        for dist_k in (0.04, 0.09, 0.14, 0.20, 0.27):
+            rk = dist_k * span_g
+            cands.append((pref_x + rk * ux_p, pref_y + rk * uy_p))
+            for s_side in (1.0, -1.0):
+                cands.append((pref_x + rk * nx_p * s_side, pref_y + rk * ny_p * s_side))
+                cands.append((pref_x + rk * 0.65 * (ux_p + nx_p * s_side), pref_y + rk * 0.65 * (uy_p + ny_p * s_side)))
+        # Anello completo attorno a link per casi molto affollati
+        for r_k in (0.14, 0.21, 0.29, 0.37):
+            rk = r_k * span_g
+            for deg in range(0, 360, 30):
+                rad = math.radians(deg)
+                cands.append((link_x + rk * math.cos(rad), link_y + rk * math.sin(rad)))
+
+        best_x, best_y = cands[0]
+        best_s = _score_box(best_x, best_y, hw, hh, link_x, link_y)
+        for cx_, cy_ in cands[1:]:
+            sc_ = _score_box(cx_, cy_, hw, hh, link_x, link_y)
+            if sc_ < best_s:
+                best_s = sc_
+                best_x, best_y = cx_, cy_
+
+        placed_boxes.append((best_x, best_y, hw + 0.008 * span_g, hh + 0.008 * span_g))
+        all_x.extend([best_x - hw, best_x + hw, link_x])
+        all_y.extend([best_y - hh, best_y + hh, link_y])
+
+        # Piccolo segmento di richiamo tratteggiato solo se il box e' distante dal punto di attacco
+        dx_r = max(0.0, abs(link_x - best_x) - hw * 0.9)
+        dy_r = max(0.0, abs(link_y - best_y) - hh * 0.9)
+        if math.hypot(dx_r, dy_r) > 0.025 * span_g:
+            ax.plot([link_x, best_x], [link_y, best_y], color=col, lw=0.9, ls=':', alpha=0.75, zorder=5)
+
+        ax.text(best_x, best_y, label_txt, color=col, weight='bold', fontsize=fontsize,
+                bbox=box_style, ha='center', va='center', zorder=7)
+        return best_x, best_y
+
+    def _draw_fixed_arrow(tip_x, tip_y, dx_u, dy_u, arr_len, col, lw_shaft=2.2, hw_arr=8.5):
+        tail_x = tip_x - dx_u * arr_len
+        tail_y = tip_y - dy_u * arr_len
+        ax.annotate('', xy=(tip_x, tip_y), xytext=(tail_x, tail_y),
+                    arrowprops=dict(facecolor=col, edgecolor=col, width=lw_shaft, headwidth=hw_arr, shrink=0),
+                    zorder=6)
+        drawn_arrows.append(((tail_x, tail_y), (tip_x, tip_y)))
+        all_x.extend([tip_x, tail_x])
+        all_y.extend([tip_y, tail_y])
+        return tail_x, tail_y
+
     # 1. Disegna le travi e gli assi monoassiali (ascissa s)
     for el in elementi:
         n1, n2 = nodi[int(el['n1'])], nodi[int(el['n2'])]
-        plt.plot([n1[0], n2[0]], [n1[1], n2[1]], 'k-', linewidth=3.5, zorder=1)
-        
+        ax.plot([n1[0], n2[0]], [n1[1], n2[1]], 'k-', linewidth=3.2, zorder=1)
         if tipo_grafico == "monoassiali":
             dx, dy = n2[0] - n1[0], n2[1] - n1[1]
             L = math.hypot(dx, dy)
             if L > 0:
-                ux, uy = dx/L, dy/L
-                plt.annotate('', xy=(n1[0] + ux*L*0.4, n1[1] + uy*L*0.4), xytext=(n1[0], n1[1]),
-                             arrowprops=dict(edgecolor='purple', arrowstyle='->', lw=2.5), zorder=4)
-                plt.text(n1[0] + ux*L*0.2, n1[1] + uy*L*0.2 + 0.15, 's', color='purple', weight='bold', fontsize=12)
+                ux, uy = dx / L, dy / L
+                nx, ny = -uy, ux
+                ax.annotate('', xy=(n1[0] + ux * L * 0.44, n1[1] + uy * L * 0.44),
+                            xytext=(n1[0] + ux * L * 0.08, n1[1] + uy * L * 0.08),
+                            arrowprops=dict(edgecolor='purple', arrowstyle='->', lw=2.2), zorder=4)
+                sx_c = n1[0] + ux * L * 0.26 - nx * off_s * 0.55
+                sy_c = n1[1] + uy * L * 0.26 - ny * off_s * 0.55
+                placed_boxes.append((sx_c, sy_c, 0.042 * span_g, 0.042 * span_g))
+                ax.text(sx_c, sy_c, 's', color='purple', weight='bold', fontsize=10.5,
+                        ha='center', va='center',
+                        bbox=dict(boxstyle='round,pad=0.12', fc='white', ec='none', alpha=0.85), zorder=5)
 
-    # 2. Disegna i nodi
+    # 2. Disegna i nodi (cerchi + ID; eventuale anello arancione sulle cerniere interne)
+    cern_nodi = {c['nodo'] for c in (cerniere_plot or [])}
     for nid, coords in nodi.items():
-        plt.scatter(coords[0], coords[1], c='white', s=150, zorder=2, edgecolors='black', linewidth=2.5)
-        plt.text(coords[0], coords[1], f"{nid}", fontsize=11, weight='bold', ha='center', va='center', color='black')
+        if nid in cern_nodi:
+            ax.scatter([coords[0]], [coords[1]], c='none', s=270, zorder=2, edgecolors='#fd7e14', linewidths=2.2)
+        ax.scatter(coords[0], coords[1], c='white', s=150, zorder=3, edgecolors='black', linewidth=2.2)
+        ax.text(coords[0], coords[1], f"{nid}", fontsize=10.5, weight='bold', ha='center', va='center', color='black', zorder=4)
 
-    # 3. Disegna le reazioni con riquadro bianco per massima visibilità
-    scale = max([math.hypot(nodi[int(e['n2'])][0]-nodi[int(e['n1'])][0], nodi[int(e['n2'])][1]-nodi[int(e['n1'])][1]) for e in elementi]) * 0.18
-    if scale == 0: scale = 0.5 
-    
+    # 3. Reazioni vincolari esterne (direzione fisica invariante + riquadro anti-collisione)
     for r in reazioni:
         xn, yn = nodi[r['nodo']]
         sym_lbl = sym_reaz_mpl(str(r['sym']))
@@ -552,7 +715,7 @@ def plot_sistema_S0(nodi, elementi, reazioni, valori_calcolati, filename, out_di
             valore = valori_calcolati.get(r['sym'], 0)
             try:
                 num_val = float(valore)
-                valore_str = fmt_num(num_val, 2)
+                valore_str = fmt_num(num_val, 2, plain=True)
                 colore_freccia = 'red' if num_val < 0 else 'forestgreen'
             except Exception:
                 valore_str = str(valore)
@@ -560,41 +723,128 @@ def plot_sistema_S0(nodi, elementi, reazioni, valori_calcolati, filename, out_di
             unita_str = (" N·m" if r['tipo'] == 'M' else " N") if con_unita else ""
             label = f"{sym_lbl} = {valore_str}{unita_str}"
 
-        # Stile box bianco dietro il testo per evitare sovrapposizioni illeggibili
-        box_style = dict(boxstyle='round,pad=0.3', fc='white', ec=colore_freccia, alpha=0.9, lw=1.5)
+        box_style = dict(boxstyle='round,pad=0.24', fc='white', ec=colore_freccia, alpha=0.95, lw=1.4)
 
         if r['tipo'] == 'Fx':
-            plt.annotate(label, xy=(xn, yn), xytext=(xn - scale*1.2, yn), 
-                         arrowprops=dict(facecolor=colore_freccia, width=2.5, headwidth=9), 
-                         color=colore_freccia, weight='bold', fontsize=10, bbox=box_style, ha='right')
+            tx, ty = _draw_fixed_arrow(xn, yn, 1.0, 0.0, L_arr_ext, colore_freccia)
+            _place_label(tx - 0.06 * span_g, ty, tx, ty, label, colore_freccia, box_style, fontsize=9.2)
         elif r['tipo'] == 'Fy':
-            plt.annotate(label, xy=(xn, yn), xytext=(xn, yn - scale*1.2), 
-                         arrowprops=dict(facecolor=colore_freccia, width=2.5, headwidth=9), 
-                         color=colore_freccia, weight='bold', fontsize=10, bbox=box_style, ha='center')
+            tx, ty = _draw_fixed_arrow(xn, yn, 0.0, 1.0, L_arr_ext, colore_freccia)
+            _place_label(tx, ty - 0.06 * span_g, tx, ty, label, colore_freccia, box_style, fontsize=9.2)
         elif r['tipo'] == 'M':
-            plt.plot(xn, yn, marker='o', markersize=24, color=colore_freccia, zorder=3, fillstyle='none', markeredgewidth=2.5)
-            plt.text(xn + 0.25, yn + 0.25, label, color=colore_freccia, weight='bold', fontsize=10, bbox=box_style)
+            r_arc = 0.062 * span_g
+            arc = patches.Arc((xn, yn), width=2 * r_arc, height=2 * r_arc, angle=0,
+                              theta1=30, theta2=295, lw=2.3, color=colore_freccia, zorder=5)
+            ax.add_patch(arc)
+            th_end = math.radians(295)
+            ex_a, ey_a = xn + r_arc * math.cos(th_end), yn + r_arc * math.sin(th_end)
+            ax.annotate('', xy=(ex_a + 0.018 * span_g, ey_a + 0.008 * span_g), xytext=(ex_a - 0.01 * span_g, ey_a - 0.005 * span_g),
+                        arrowprops=dict(facecolor=colore_freccia, edgecolor=colore_freccia, width=1.8, headwidth=7, shrink=0), zorder=6)
+            lx_a, ly_a = xn + r_arc * 0.707, yn + r_arc * 0.707
+            _place_label(xn + 0.14 * span_g, yn + 0.12 * span_g, lx_a, ly_a, label, colore_freccia, box_style, fontsize=9.2)
         elif r['tipo'] == 'Fn':
             _ang = math.radians(float(r.get('angle', 0)) + 90)
             _dx, _dy = math.cos(_ang), math.sin(_ang)
-            plt.annotate(label, xy=(xn, yn), xytext=(xn - scale*1.2*_dx, yn - scale*1.2*_dy),
-                         arrowprops=dict(facecolor=colore_freccia, width=2.5, headwidth=9),
-                         color=colore_freccia, weight='bold', fontsize=10, bbox=box_style, ha='center')
             if r.get('pendolo'):
-                # biella dal nodo verso il vincolo a terra (direzione dell'asse), cerniera a terra con tratteggio
-                xa, ya = xn + scale * 1.5 * _dx, yn + scale * 1.5 * _dy
-                plt.plot([xn, xa], [yn, ya], color='dimgray', lw=3, zorder=1, solid_capstyle='round')
-                plt.plot([xa], [ya], marker='o', markersize=9, markerfacecolor='white', markeredgecolor='dimgray', zorder=3)
+                xa, ya = xn + L_arr_ext * 1.1 * _dx, yn + L_arr_ext * 1.1 * _dy
+                ax.plot([xn, xa], [yn, ya], color='dimgray', lw=3, zorder=1, solid_capstyle='round')
+                ax.plot([xa], [ya], marker='o', markersize=9, markerfacecolor='white', markeredgecolor='dimgray', zorder=3)
                 nx_, ny_ = -_dy, _dx
                 for k_ in (-2, -1, 0, 1, 2):
-                    bx_, by_ = xa + nx_ * 0.12 * scale * k_, ya + ny_ * 0.12 * scale * k_
-                    plt.plot([bx_, bx_ + _dx * 0.18 * scale + nx_ * 0.05 * scale], [by_, by_ + _dy * 0.18 * scale + ny_ * 0.05 * scale],
-                             color='dimgray', lw=1, zorder=1)
+                    bx_, by_ = xa + nx_ * 0.10 * L_arr_ext * k_, ya + ny_ * 0.10 * L_arr_ext * k_
+                    ax.plot([bx_, bx_ + _dx * 0.16 * L_arr_ext + nx_ * 0.05 * L_arr_ext],
+                            [by_, by_ + _dy * 0.16 * L_arr_ext + ny_ * 0.05 * L_arr_ext], color='dimgray', lw=1, zorder=1)
+                node_pts.append((xa, ya))
+            tx, ty = _draw_fixed_arrow(xn, yn, _dx, _dy, L_arr_ext, colore_freccia)
+            _place_label(tx - _dx * 0.06 * span_g, ty - _dy * 0.06 * span_g, tx, ty, label, colore_freccia, box_style, fontsize=9.2)
 
-    plt.axis('equal'); plt.axis('off')
+    # 4. Reazioni interne alle cerniere (legenda bicolore: Blu = tratto A, Viola = tratto B opposto)
+    for ch in (cerniere_plot or []):
+        xc, yc = nodi[ch['nodo']]
+        ux_d, uy_d = ch['dir']
+        col_c = ch['colore']
+        sgn_c = ch['sign']  # +1 sul tratto precedente/ramo (colore A), -1 sul tratto successivo/carrier (colore B)
+        nx_c, ny_c = -uy_d, ux_d
+
+        # Trova la lunghezza effettiva dell'asta del tronco uscente dalla cerniera
+        len_tr = span_g * 0.5
+        for el_ in elementi:
+            a1, a2 = int(el_['n1']), int(el_['n2'])
+            if ch['nodo'] not in (a1, a2):
+                continue
+            alt = a2 if a1 == ch['nodo'] else a1
+            vx_, vy_ = nodi[alt][0] - xc, nodi[alt][1] - yc
+            lv_ = math.hypot(vx_, vy_)
+            if lv_ > 1e-9 and (vx_ * ux_d + vy_ * uy_d) / lv_ > 0.85:
+                len_tr = lv_
+                break
+
+        anc_dist = min(0.145 * span_g, max(0.08 * span_g, 0.40 * len_tr))
+        arr_c = min(0.115 * span_g, max(0.075 * span_g, 0.28 * len_tr))
+        anc_x = xc + ux_d * anc_dist
+        anc_y = yc + uy_d * anc_dist
+        box_c = dict(boxstyle='round,pad=0.22', fc='white', ec=col_c, alpha=0.95, lw=1.3)
+
+        for sym_k, is_horiz in ((ch['sym_H'], True), (ch['sym_V'], False)):
+            sym_m = sym_reaz_mpl(str(sym_k))
+            if tipo_grafico == "versi":
+                dir_x = float(sgn_c) if is_horiz else 0.0
+                dir_y = 0.0 if is_horiz else float(sgn_c)
+                lbl_c = sym_m if sgn_c > 0 else ("-" + sym_m)
+                fs_c = 8.6
+            else:
+                val_raw = float(valori_calcolati.get(sym_k, 0))
+                val_eff = sgn_c * val_raw
+                unita_c = " N" if con_unita else ""
+                if abs(val_eff) < 1e-9:
+                    continue
+                dir_phys = 1.0 if val_eff >= 0 else -1.0
+                dir_x = dir_phys if is_horiz else 0.0
+                dir_y = 0.0 if is_horiz else dir_phys
+                lbl_c = f"{sym_m}={fmt_num(abs(val_eff), 2, plain=True)}{unita_c}"
+                fs_c = 8.4
+
+            # Mantieni sempre la direzione esatta (dir_x, dir_y) senza attraversare il nodo cerniera
+            par_dot = abs(dir_x * ux_d + dir_y * uy_d)
+            if par_dot >= 0.707:
+                # Forza quasi collineare all'asta: sfalsa leggermente dal tratto nero e resta lato tronco
+                perp_side = 1.0 if sgn_c > 0 else -1.0
+                cx0 = anc_x + nx_c * (0.032 * span_g * perp_side)
+                cy0 = anc_y + ny_c * (0.032 * span_g * perp_side)
+                tx_test = cx0 - 0.5 * arr_c * dir_x
+                ty_test = cy0 - 0.5 * arr_c * dir_y
+                ptx_test = cx0 + 0.5 * arr_c * dir_x
+                pty_test = cy0 + 0.5 * arr_c * dir_y
+                min_proj = min((tx_test - xc) * ux_d + (ty_test - yc) * uy_d,
+                               (ptx_test - xc) * ux_d + (pty_test - yc) * uy_d)
+                min_clear = 0.075 * span_g
+                if min_proj < min_clear:
+                    shift_u = min_clear - min_proj
+                    cx0 += ux_d * shift_u
+                    cy0 += uy_d * shift_u
+                tip_x, tip_y = cx0 + 0.5 * arr_c * dir_x, cy0 + 0.5 * arr_c * dir_y
+                pref_x = cx0 + nx_c * (0.075 * span_g * perp_side)
+                pref_y = cy0 + ny_c * (0.075 * span_g * perp_side)
+            else:
+                # Forza perpendicolare all'asta: punta esattamente sull'ancora dell'asta
+                tip_x, tip_y = anc_x, anc_y
+                pref_x = tip_x - dir_x * (arr_c + 0.05 * span_g)
+                pref_y = tip_y - dir_y * (arr_c + 0.05 * span_g)
+
+            tail_x, tail_y = _draw_fixed_arrow(tip_x, tip_y, dir_x, dir_y, arr_c, col_c, lw_shaft=1.9, hw_arr=7.2)
+            link_cx, link_cy = 0.5 * (tail_x + tip_x) if par_dot >= 0.707 else tail_x, 0.5 * (tail_y + tip_y) if par_dot >= 0.707 else tail_y
+            _place_label(pref_x, pref_y, link_cx, link_cy, lbl_c, col_c, box_c, fontsize=fs_c)
+
+    pad_s = 0.09 * span_g
+    ax.set_xlim(min(all_x) - pad_s, max(all_x) + pad_s)
+    ax.set_ylim(min(all_y) - pad_s, max(all_y) + pad_s)
+    ax.set_aspect('equal')
+    ax.axis('off')
     filepath = os.path.abspath(os.path.join(out_dir, filename))
-    plt.savefig(filepath, bbox_inches='tight', dpi=150)
-    plt.close()
+    try:
+        plt.savefig(filepath, bbox_inches='tight', dpi=140)
+    finally:
+        plt.close(fig)
     return filepath.replace("\\", "/").lstrip("/")
 
 def plot_diagrammi_singola_asta(L, expr_M, expr_T, expr_N, nome_asta, filename, out_dir, nome_sistema="S₀"):
@@ -835,7 +1085,7 @@ def _disegna_diagramma_su_ax(ax, nodi_f, elementi, expr_dict, titolo, col, show_
     angoli_deg = (0, 35, -35, 65, -65, 95, -95, 130, -130, 160, -160, 180)
 
     for eid, pxk, pyk, tx, ty, ux, uy, v_k, L, t_k in pending_labels:
-        lbl_txt = fmt_num(v_k, 2)
+        lbl_txt = fmt_num(v_k, 2, plain=True)
         hw = max_span * (0.018 + 0.0115 * len(lbl_txt))
         hh = max_span * 0.026
         sg_ = 1.0 if v_k >= 0 else -1.0
@@ -956,10 +1206,35 @@ def plot_momenti_S0_S1(nodi, elementi, M0_dict, M1_dict, grado_iperstaticita, ou
     else:
         fig, ax = plt.subplots(1, 1, figsize=(7.5, 5.0), dpi=130)
         _disegna_diagramma_su_ax(ax, nodi_f, elementi, M0_dict, "Momento Flettente M₀(s) [N·m] (Sistema Isostatico)\n(lato fibre tese)", "crimson")
+    filepath = os.path.abspath(os.path.join(out_dir, filename))
     try:
         plt.tight_layout()
-        filepath = os.path.abspath(os.path.join(out_dir, filename))
         plt.savefig(filepath, bbox_inches='tight', dpi=130)
+    finally:
+        plt.close(fig)
+    return filepath.replace("\\", "/").lstrip("/")
+
+def _img_block_html(title_html, img_path, width, page_break_before=False):
+    """Blocco titolo+immagine centrato e indivisibile in QTextBrowser e PDF."""
+    pb = " page-break-before: always;" if page_break_before else ""
+    return (
+        f"<div align='center' style='text-align:center; page-break-inside: avoid;{pb} margin: 10px 0 14px 0;'>"
+        f"<div align='center' style='text-align:center; margin-bottom: 4px;'>{title_html}</div>"
+        f"<div align='center' style='text-align:center;'><img src='file:///{img_path}' width='{width}'></div>"
+        "</div>"
+    )
+
+def _salva_trio_diagrammi(nodi_f, elementi, M_dict, T_dict, N_dict, tit_M, tit_T, tit_N, filename, out_dir):
+    """Genera e salva i 3 diagrammi globali impilati (M, T, N) su un'unica pagina compatta."""
+    plt, _ = _get_mpl()
+    fig, axes = plt.subplots(3, 1, figsize=(9.6, 8.6), dpi=130)
+    try:
+        _disegna_diagramma_su_ax(axes[0], nodi_f, elementi, M_dict, tit_M, "crimson")
+        _disegna_diagramma_su_ax(axes[1], nodi_f, elementi, T_dict, tit_T, "forestgreen")
+        _disegna_diagramma_su_ax(axes[2], nodi_f, elementi, N_dict, tit_N, "dodgerblue")
+        fig.tight_layout(h_pad=1.0)
+        filepath = os.path.abspath(os.path.join(out_dir, filename))
+        fig.savefig(filepath, bbox_inches='tight', dpi=130)
     finally:
         plt.close(fig)
     return filepath.replace("\\", "/").lstrip("/")
@@ -1750,13 +2025,72 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
         except Exception:
             struttura_non_labile = True
 
-    report.append("<h2>1. Dati della Struttura e Verifica Cinematica</h2>")
-    report.append(f"<p>Telaio piano composto da <b>{num_aste} aste</b> e <b>{num_nodi} nodi</b>.</p>")
-    
-    # Stampa del box Proprietà Sezione (condizionale: Dimensionamento vs Verifica)
-    report.append("<div style='background-color: #f8f9fa; padding: 10px; border-left: 4px solid #198754; margin-bottom: 15px;'>")
-    report.append("<h4>Proprietà del Materiale e della Sezione</h4>")
-    report.append("<ul>")
+    # ==========================================
+    # INTESTAZIONE INIZIALE: BOX RIEPILOGATIVO VERIFICA CINEMATICA (CIMA PAGINA 1)
+    # ==========================================
+    cern_desc_txt = f"{num_cerniere_interne} {'cerniera interna' if num_cerniere_interne == 1 else 'cerniere interne'}" if num_cerniere_interne else "nessuna cerniera interna"
+    report.append("<div style='background-color: #eef4ff; padding: 12px 15px; border: 1px solid #b6d4fe; border-left: 5px solid #0d6efd; border-radius: 4px; margin-bottom: 16px;'>")
+    report.append("<h3 style='margin: 0 0 8px 0; color: #0a58ca;'>Verifica Cinematica</h3>")
+    report.append("<ul style='margin: 4px 0 8px 0;'>")
+    report.append(f"<li><b>Gradi di libert&agrave;:</b> 3 &times; {num_tronchi} {'tronco' if num_tronchi == 1 else 'tronchi'} = <b>{gdl_liberi}</b> ({cern_desc_txt})</li>")
+    report.append(f"<li><b>Gradi di vincolo:</b> v<sub>e</sub> = {vincoli_reali} (esterni) + v<sub>i</sub> = {vincoli_interni} (cerniere interne) &rArr; <b>v<sub>tot</sub> = {vincoli_totali}</b></li>")
+    if grado_iperstaticita == 0:
+        stat_msg = "La struttura &egrave; <b>isostatica</b>."
+    elif grado_iperstaticita == 1:
+        stat_msg = "La struttura &egrave; <b>1 volta iperstatica</b>."
+    elif grado_iperstaticita > 1:
+        stat_msg = f"La struttura &egrave; <b>{grado_iperstaticita} volte iperstatica</b>."
+    else:
+        stat_msg = "La struttura &egrave; <b>labile</b> (h &lt; 0)."
+    report.append(f"<li><b>Grado di iperstaticit&agrave;:</b> h = v<sub>tot</sub> &minus; gdl = {vincoli_totali} &minus; {gdl_liberi} = <b>{grado_iperstaticita}</b> &rarr; {stat_msg}</li>")
+    if grado_iperstaticita >= 0 and struttura_non_labile:
+        report.append("<li><b>Verifica di non labilit&agrave;:</b> sistema statico ben posto / non singolare (vincoli correttamente disposti).</li>")
+    report.append("</ul></div>")
+
+    if grado_iperstaticita >= 0 and not struttura_non_labile:
+        report.append(_box_errore("Analisi Interrotta (Struttura Labile)",
+                                  "I vincoli inseriti non impediscono tutti gli atti di moto rigidi (vincoli mal disposti, ad es. paralleli o concorrenti)."))
+        return "\n".join(report), "", ""
+    if grado_iperstaticita > 1:
+        report.append("<div style='background-color: #fff3cd; padding: 15px; border-left: 5px solid #ffc107; margin-bottom: 20px;'>")
+        report.append("<h4 style='color: #856404; margin-top: 0;'>Limite del Solutore Superato</h4>")
+        report.append(f"<p style='color: #856404;'>Questa versione del programma supporta un massimo di <b>1 grado di iperstaticit&agrave;</b>. La struttura richiede <b>{grado_iperstaticita}</b> equazioni di congruenza simultanee.</p></div>")
+        return "\n".join(report), "", ""
+    if grado_iperstaticita < 0:
+        report.append(_box_errore("Analisi Interrotta (Struttura Labile)",
+                                  "La struttura non &egrave; vincolata in modo sufficiente o efficace. &Egrave; impossibile procedere con l'analisi statica."))
+        return "\n".join(report), "", ""
+
+    # Schema generale della struttura reale (generato subito per Sezione 1)
+    supports_n = dati_json.get('supports', [])
+    percorso_S1 = "plv_S0_S1.png"
+    percorso_diag = "plv_diagrammi.png"
+    img_schema_gen = plot_schema_generale(
+        nodi, elementi, supports_n, cerniere_interne,
+        dati_json.get('point_loads', []),
+        dati_json.get('element_loads', []),
+        dati_json.get('thermal_loads', []),
+        out_dir, percorso_S1
+    )
+
+    # ==========================================
+    # SEZIONE 1: DATI DELLA STRUTTURA E CLASSIFICAZIONE CINEMATICA
+    # ==========================================
+    report.append("<h2>1. Dati della struttura e classificazione cinematica</h2>")
+    cern_pos_txt = (
+        "; cerniere interne nei nodi: <b>" + ", ".join(str(ci_['nodo']) for ci_ in cerniere_info) + "</b>"
+        if cerniere_info else "; nessuna cerniera interna"
+    )
+    report.append(f"<p>Telaio piano composto da <b>{num_aste} aste</b> e <b>{num_nodi} nodi</b>{cern_pos_txt}.</p>")
+    report.append(f"<div style='text-align: center; margin: 8px 0 14px 0;'><img src='file:///{img_schema_gen}' width='650'></div>")
+
+    report.append("<div style='page-break-inside: avoid;'><p><b>Analisi dei vincoli esterni:</b></p><ul>")
+    for det in dettagli_vincoli:
+        report.append(det)
+    report.append("</ul></div>")
+
+    report.append("<div style='background-color: #f8f9fa; padding: 10px 14px; border-left: 4px solid #198754; margin-bottom: 16px;'>")
+    report.append("<h4 style='margin: 0 0 6px 0;'>Propriet&agrave; Geometriche e del Materiale</h4><ul style='margin: 4px 0;'>")
     gpa_note = f" ({fmt_num(E / 1e9, 2)} GPa)" if E >= 1e9 else ""
     report.append(f"<li>Modulo di Young (E): <b>{fmt_sci_html(E)} Pa</b>{gpa_note}</li>")
     report.append(f"<li>Tensione ammissibile (&sigma;<sub>amm</sub>): <b>{fmt_num(sigma_amm_p1 / 1e6, 2)} MPa</b></li>")
@@ -1766,7 +2100,7 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
         else:
             report.append("<li>Rigidezza flessionale: <b>EI = cost.</b></li>")
         if design_mode == 'ratio':
-            report.append(f"<li>Sezione rettangolare incognita da dimensionare con rapporto di forma: <b>h / b = {fmt_num(ratio_k, 2)}</b></li>")
+            report.append(f"<li>Sezione rettangolare da dimensionare con rapporto di forma: <b>h / b = {fmt_num(ratio_k, 2)}</b></li>")
         elif design_mode == 'h':
             report.append(f"<li>Sezione rettangolare da dimensionare con base fissata: <b>b = {fmt_num(b, 3)} m</b> (altezza h incognita)</li>")
         elif design_mode == 'b':
@@ -1774,82 +2108,19 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
     else:
         W_f_p1 = (b * (h**2)) / 6
         report.append(f"<li>Dimensioni sezione rettangolare: b = <b>{fmt_num(b, 3)} m</b>, h = <b>{fmt_num(h, 3)} m</b></li>")
-        report.append(f"<li>Area della sezione (A): b &middot; h = <b>{fmt_sci_html(A)} m<sup>2</sup></b></li>")
-        report.append(f"<li>Momento d'Inerzia (I): (b &middot; h<sup>3</sup>) / 12 = <b>{fmt_sci_html(I)} m<sup>4</sup></b></li>")
-        report.append(f"<li>Modulo di resistenza flessionale (W): (b &middot; h<sup>2</sup>) / 6 = <b>{fmt_sci_html(W_f_p1)} m<sup>3</sup></b></li>")
-        if EI_assegnato:
-            report.append(f"<li>Rigidezza flessionale (EI) <b>assegnata</b>: <b>{fmt_sci_html(EI)} N&middot;m<sup>2</sup></b></li>")
-        else:
-            report.append(f"<li>Rigidezza flessionale (EI): E &middot; I = <b>{fmt_sci_html(EI)} N&middot;m<sup>2</sup></b></li>")
+        report.append(f"<li>Area (A = b&middot;h): <b>{fmt_num(A, 4) if float(sp.N(A)) >= 1e-3 else fmt_sci_html(A)} m<sup>2</sup></b></li>")
+        report.append(f"<li>Momento d'Inerzia (I = b&middot;h<sup>3</sup>/12): <b>{fmt_sci_html(I)} m<sup>4</sup></b></li>")
+        report.append(f"<li>Modulo di resistenza flessionale (W = b&middot;h<sup>2</sup>/6): <b>{fmt_sci_html(W_f_p1)} m<sup>3</sup></b></li>")
+        report.append(f"<li>Rigidezza flessionale (EI): <b>{fmt_sci_html(EI)} N&middot;m<sup>2</sup></b></li>")
     report.append("</ul></div>")
-    
-    report.append("<p><b>Analisi dei vincoli esterni:</b></p>")
-    report.append("<ul>")
-    for det in dettagli_vincoli:
-        report.append(det)
-    report.append("</ul>")
-
-    report.append("<div style='background-color: #e9ecef; padding: 15px; border-left: 4px solid #6c757d; margin-top: 10px; margin-bottom: 20px;'>")
-    report.append("<p><b>Verifica Cinematica:</b></p>")
-    report.append("<ul>")
-    report.append(f"<li>Numero di tronchi rigidi: <b>t = {num_tronchi}</b> &rArr; gradi di libert&agrave; <b>gdl = 3t = {gdl_liberi}</b></li>")
-    report.append(f"<li>Gradi di vincolo esterni a terra: <b>v<sub>e</sub> = {vincoli_reali}</b></li>")
-    if vincoli_interni > 0:
-        report.append(f"<li>Gradi di vincolo interni (cerniere): <b>v<sub>i</sub> = {vincoli_interni}</b></li>")
-    report.append(f"<li>Gradi di vincolo totali: <b>v<sub>tot</sub> = {vincoli_totali}</b></li>")
-    report.append(f"<li>Grado di iperstaticit&agrave;: <b>h = v<sub>tot</sub> &minus; gdl = {vincoli_totali} &minus; {gdl_liberi} = {grado_iperstaticita}</b></li>")
-    if grado_iperstaticita >= 0 and struttura_non_labile:
-        report.append("<li>Verifica di non labilit&agrave;: buona disposizione dei vincoli (centri di rotazione assoluti e relativi non compatibili con atti di moto rigidi) &rarr; <b>struttura non labile</b>.</li>")
-    report.append("</ul>")
-    
-    if grado_iperstaticita >= 0 and not struttura_non_labile:
-        report.append("<p style='color:red;'>&rarr; La struttura risulta <b>labile</b> per cattiva disposizione dei vincoli.</p></div>")
-        report.append(_box_errore("Analisi Interrotta (Struttura Labile)",
-                                  "I vincoli inseriti non impediscono tutti gli atti di moto rigidi (vincoli mal disposti, ad es. paralleli o concorrenti)."))
-        return "\n".join(report), "", ""
-
-    if grado_iperstaticita == 0:
-        report.append("<p style='color:green;'>&rarr; La struttura è <b>isostatica</b>.</p>")
-        report.append("</div>")
-        
-    elif grado_iperstaticita == 1:
-        report.append(f"<p style='color:#0d6efd;'>&rarr; La struttura è <b>1 volta iperstatica</b>.</p>")
-        report.append("<p><b>Conseguenza operativa:</b><br>")
-        report.append("Le sole equazioni cardinali della statica non bastano. Si adotta il <i>Metodo delle Forze</i> con il Principio dei Lavori Virtuali, considerando il solo contributo flessionale.</p>")
-        report.append("</div>")
-        
-    elif grado_iperstaticita > 1:
-        report.append(f"<p style='color:darkorange;'>&rarr; La struttura è <b>{grado_iperstaticita} volte iperstatica</b>.</p>")
-        report.append("</div>") # Chiude il box grigio principale
-        
-        # Genera un box giallo di allerta e ferma il solutore
-        report.append("<div style='background-color: #fff3cd; padding: 15px; border-left: 5px solid #ffc107; margin-bottom: 20px;'>")
-        report.append("<h4 style='color: #856404; margin-top: 0;'>⚠️ Limite del Solutore Superato</h4>")
-        report.append(f"<p style='color: #856404;'>Questa versione del programma supporta un massimo di <b>1 grado di iperstaticità</b>.<br>")
-        report.append(f"La struttura inserita richiede <b>{grado_iperstaticita} equazioni di congruenza simultanee</b>, funzionalità attualmente non implementata.</p>")
-        report.append("</div>")
-        return "\n".join(report), "", ""
-        
-    else:
-        report.append(f"<p style='color:red;'>&rarr; La struttura è <b>labile</b> (h &lt; 0).</p>")
-        report.append("</div>") # Chiude il box grigio principale
-        
-        # Genera un box rosso di errore e ferma il solutore
-        report.append("<div style='background-color: #f8d7da; padding: 15px; border-left: 5px solid #dc3545; margin-bottom: 20px;'>")
-        report.append("<h4 style='color: #721c24; margin-top: 0;'>🛑 Analisi Interrotta</h4>")
-        report.append("<p style='color: #721c24;'>La struttura non è vincolata in modo sufficiente o efficace. È impossibile procedere con l'analisi statica.</p>")
-        report.append("</div>")
-        return "\n".join(report), "", ""
 
     # ==========================================
     # FASE 2: SCELTA INCOGNITA E SISTEMA PRINCIPALE
     # ==========================================
     reazioni_simboliche = []
-    dip_ced = dip_term = False   # distorsioni che dipendono dalla sezione (usato dal dimensionamento)
+    dip_ced = dip_term = False
     supports_n = dati_json.get('supports', [])
 
-    # Simboli univoci per le reazioni dei vincoli inclinati (carrello inclinato, pendolo, bipendolo inclinato):
-    # piu' pendoli sullo stesso nodo (doppio pendolo) devono avere incognite distinte.
     sym_Fn, _cont_Fn = {}, {}
     for i_s, s_ in enumerate(supports_n):
         if s_.get('rotated_roller'):
@@ -1857,16 +2128,14 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
             _cont_Fn[nid_] = _cont_Fn.get(nid_, 0) + 1
             sym_Fn[i_s] = sp.Symbol(f'Rn_{nid_}' if _cont_Fn[nid_] == 1 else f'Rn_{nid_}_{_cont_Fn[nid_]}')
 
-    # Direzione dell'incognita iperstatica X1 (forza unitaria / coppia unitaria nel sistema S1)
     ang_X1 = sp.Integer(0)
-    idx_X1_sup = None          # indice (in 'supports') del vincolo inclinato che porta X1 = Rn
+    idx_X1_sup = None
     if grado_iperstaticita > 0:
         if tipo_svinc == 'Fn':
             cand = [i for i, s_ in enumerate(supports_n) if int(s_['node_id']) == nodo_svinc and s_.get('rotated_roller')]
             if not cand:
                 _errore_cerniera("Incognita iperstatica non valida",
-                                 f"Il Nodo {nodo_svinc} non ha un carrello inclinato / pendolo / bipendolo inclinato: "
-                                 "scegli un'altra incognita.")
+                                 f"Il Nodo {nodo_svinc} non ha un carrello inclinato / pendolo / bipendolo inclinato: scegli un'altra incognita.")
             idx_X1_sup = cand[0]
             if isinstance(incognita, dict) and incognita.get('sup_idx') is not None and int(incognita['sup_idx']) in cand:
                 idx_X1_sup = int(incognita['sup_idx'])
@@ -1880,8 +2149,7 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
             chiave_fix = {'Fx': 'fix_u', 'Fy': 'fix_v', 'M': 'fix_w'}[tipo_svinc]
             if not any(int(s_['node_id']) == nodo_svinc and s_.get(chiave_fix) for s_ in supports_n):
                 _errore_cerniera("Incognita iperstatica non valida",
-                                 f"Nel Nodo {nodo_svinc} non esiste la reazione {tipo_svinc} scelta come incognita "
-                                 "(il vincolo e' stato modificato o cancellato?). Riseleziona l'incognita.")
+                                 f"Nel Nodo {nodo_svinc} non esiste la reazione {tipo_svinc} scelta come incognita.")
     X1_fx, X1_fy, X1_m = sp.Integer(0), sp.Integer(0), sp.Integer(0)
     if tipo_svinc == 'Fx': X1_fx = sp.Integer(1)
     elif tipo_svinc == 'Fy': X1_fy = sp.Integer(1)
@@ -1889,81 +2157,64 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
     elif tipo_svinc == 'Fn': X1_fx, X1_fy = cs_ang(ang_X1 + 90)
 
     def _reazioni_da_vincoli(rimuovi_X1):
-        """Reazioni incognite dei vincoli a terra; con rimuovi_X1 si toglie quella scelta come incognita iperstatica."""
         out = []
         for i_s, s in enumerate(supports_n):
             nid = int(s.get('node_id'))
             if s.get('fix_u') and not (rimuovi_X1 and nid == nodo_svinc and tipo_svinc == 'Fx'):
-                out.append({'nodo': nid, 'tipo': 'Fx', 'sym': sp.Symbol(f'H_{nid}')})
+                out.append({'nodo': nid, 'tipo': 'Fx', 'sym': sp.Symbol(f'H_{nid}'), 'sup_idx': i_s})
             if s.get('fix_v') and not (rimuovi_X1 and nid == nodo_svinc and tipo_svinc == 'Fy'):
-                out.append({'nodo': nid, 'tipo': 'Fy', 'sym': sp.Symbol(f'V_{nid}')})
+                out.append({'nodo': nid, 'tipo': 'Fy', 'sym': sp.Symbol(f'V_{nid}'), 'sup_idx': i_s})
             if s.get('fix_w') and not (rimuovi_X1 and nid == nodo_svinc and tipo_svinc == 'M'):
-                out.append({'nodo': nid, 'tipo': 'M', 'sym': sp.Symbol(f'M_{nid}')})
+                out.append({'nodo': nid, 'tipo': 'M', 'sym': sp.Symbol(f'M_{nid}'), 'sup_idx': i_s})
             if s.get('rotated_roller') and not (rimuovi_X1 and tipo_svinc == 'Fn' and i_s == idx_X1_sup):
                 out.append({'nodo': nid, 'tipo': 'Fn', 'sym': sym_Fn[i_s], 'angle': s.get('angle', 0), 'sup_idx': i_s,
                             'pendolo': bool(s.get('pendolo'))})
         return out
 
+    report.append("<h2>2. Scelta dell'incognita iperstatica e sistema principale</h2>")
     if grado_iperstaticita > 0:
-        tipo_azione = {'Fx': "Forza Orizzontale", 'Fy': "Forza Verticale", 'Fn': "Forza Normale"}.get(tipo_svinc, "Momento")
+        tipo_azione = {'Fx': "forza orizzontale", 'Fy': "forza verticale", 'Fn': "reazione normale/assiale"}.get(tipo_svinc, "coppia")
         sim_inc_map = {'Fx': f"H<sub>{nodo_svinc}</sub>", 'Fy': f"V<sub>{nodo_svinc}</sub>",
                        'M': f"M<sub>{nodo_svinc}</sub>", 'Fn': sym_reaz_html(sym_Fn[idx_X1_sup]) if idx_X1_sup is not None else f"R<sub>n{nodo_svinc}</sub>"}
-        sim_inc_html = sim_inc_map.get(tipo_svinc, f"X<sub>1</sub>")
-        report.append("<h2>2. Scelta dell'incognita iperstatica e sistema principale</h2>")
-        report.append(f"<p>Si assume come incognita iperstatica <b>X<sub>1</sub></b> = {tipo_azione.lower()} al Nodo {nodo_svinc} (X<sub>1</sub> = {sim_inc_html}). Il sistema isostatico principale si ottiene rimuovendo il vincolo corrispondente.</p>")
+        sim_inc_html = sim_inc_map.get(tipo_svinc, "X<sub>1</sub>")
+        report.append(f"<p>Si sceglie come incognita iperstatica <b>X<sub>1</sub> = {sim_inc_html}</b> ({tipo_azione} al Nodo {nodo_svinc}), "
+                      f"degradando/rimuovendo il vincolo corrispondente per ottenere il sistema isostatico principale <b>S<sub>0</sub></b>.</p>")
+        report.append("<p>Formula di sovrapposizione degli effetti: <span class='formula'>S = S<sub>0</sub> + X<sub>1</sub> &middot; S<sub>1</sub></span></p>")
         reazioni_simboliche = _reazioni_da_vincoli(True)
     else:
-        report.append("<h2>2. Sistema Isostatico</h2>")
-        report.append("<p>La struttura è <b>isostatica</b>. Non viene rimosso alcun vincolo e si procede al calcolo diretto delle reazioni e delle sollecitazioni.</p>")
-        reazioni_simboliche = _reazioni_da_vincoli(False)   # manteniamo tutti i vincoli
+        report.append("<p>La struttura &egrave; <b>isostatica</b>: non si rimuove alcun vincolo e il sistema principale coincide con quello reale (<b>S = S<sub>0</sub></b>).</p>")
+        reazioni_simboliche = _reazioni_da_vincoli(False)
+
+    if cerniere_info:
+        report.append(
+            "<div style='background-color: #f8f9fa; padding: 8px 12px; border-left: 4px solid #6f42c1; margin: 8px 0 14px 0; font-size: 13px;'>"
+            "<b>Legenda reazioni interne nelle cerniere:</b> "
+            "<span style='color:#0d6efd; font-weight:bold;'>&#9632; Blu</span> = reazione esercitata dalla cerniera sul tratto precedente (verso +); "
+            "<span style='color:#9c36b5; font-weight:bold;'>&#9632; Viola</span> = reazione uguale ed opposta sul tratto successivo (verso &minus;)."
+            "</div>"
+        )
 
     Somma_Fx_ext = sum([p.get('Fx', 0) for p in dati_json.get('point_loads', [])])
     Somma_Fy_ext = sum([p.get('Fy', 0) for p in dati_json.get('point_loads', [])])
     polo_id = list(nodi.keys())[0]
     xp, yp = nodi[polo_id]
-    Somma_M_ext = sum([p.get('M', 0) + p.get('Fy', 0)*(nodi[int(p['node_id'])][0] - xp) - p.get('Fx', 0)*(nodi[int(p['node_id'])][1] - yp) 
+    Somma_M_ext = sum([p.get('M', 0) + p.get('Fy', 0)*(nodi[int(p['node_id'])][0] - xp) - p.get('Fx', 0)*(nodi[int(p['node_id'])][1] - yp)
                        for p in dati_json.get('point_loads', [])])
-
     for el in dati_json.get('element_loads', []):
         c = _carico(el)
         if c is None: continue
         Rx, Ry, X_bar, Y_bar = _risultante(c)
-        Somma_Fx_ext += Rx
-        Somma_Fy_ext += Ry
+        Somma_Fx_ext += Rx; Somma_Fy_ext += Ry
         Somma_M_ext += Ry * (X_bar - xp) - Rx * (Y_bar - yp)
 
     variabili = [r['sym'] for r in reazioni_simboliche]
-    
+
     def stop(titolo, msg):
-        """Errore bloccante: aggiunge il box rosso al report ed interrompe il solutore."""
         report.append(_box_errore(titolo, msg))
         raise ErroreSolutore("\n".join(report))
 
     def risolvi_sicuro(equazioni, vars, nome="S0"):
         return risolvi_sistema_lineare(equazioni, vars, nome, report)
-
-    # ==========================================
-    # FASE 3: SISTEMA S0 (CARICHI REALI) E GRAFICI REAZIONI
-    # ==========================================
-    report.append("<h2>3. Sistema S<sub>0</sub> &mdash; carichi reali</h2>")
-    report.append("<p>Si impone l'equilibrio globale (&Sigma;F<sub>x</sub> = 0, &Sigma;F<sub>y</sub> = 0, &Sigma;M = 0) e l'equilibrio parziale a rotazione rispetto a eventuali cerniere interne.</p>")
-
-    def _desc_tronco(nc_, id_asta_, nodi_ramo_):
-        xc_, yc_ = float(nodi[nc_][0]), float(nodi[nc_][1])
-        xs_r = [float(nodi[n_][0]) - xc_ for n_ in nodi_ramo_]
-        ys_r = [float(nodi[n_][1]) - yc_ for n_ in nodi_ramo_]
-        n_s = ", ".join(str(n_) for n_ in sorted(nodi_ramo_))
-        if all(v <= 1e-9 for v in xs_r) and any(v < -1e-9 for v in xs_r):
-            lato = "tronco sx"
-        elif all(v >= -1e-9 for v in xs_r) and any(v > 1e-9 for v in xs_r):
-            lato = "tronco dx"
-        elif all(v >= -1e-9 for v in ys_r) and any(v > 1e-9 for v in ys_r):
-            lato = "tronco sup"
-        elif all(v <= 1e-9 for v in ys_r) and any(v < -1e-9 for v in ys_r):
-            lato = "tronco inf"
-        else:
-            lato = f"tronco Asta {id_asta_}"
-        return f"{lato}, nodi {n_s}"
 
     def _blocco_equazioni_html(righe_eq):
         rows = []
@@ -1974,283 +2225,281 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
             )
         return "<table class='eq-table' style='border:none; width:auto; margin:4px 0; background:transparent;'>" + "".join(rows) + "</table>"
 
-    eq_x = sum([r['sym'] for r in reazioni_simboliche if r['tipo'] == 'Fx']) + Somma_Fx_ext
-    eq_y = sum([r['sym'] for r in reazioni_simboliche if r['tipo'] == 'Fy']) + Somma_Fy_ext
-    for r in reazioni_simboliche:
-        if r['tipo'] == 'Fn':
-            ang_rad = cs_ang(r['angle'] + 90)
-            eq_x += r['sym'] * ang_rad[0]
-            eq_y += r['sym'] * ang_rad[1]
-
-    eq_m = sum([r['sym'] for r in reazioni_simboliche if r['tipo'] == 'M'])
-    for r in reazioni_simboliche:
-        xn, yn = nodi[r['nodo']]
-        if r['tipo'] == 'Fx': eq_m -= r['sym'] * (yn - yp)
-        if r['tipo'] == 'Fy': eq_m += r['sym'] * (xn - xp)
-        if r['tipo'] == 'Fn':
-            ang_rad = cs_ang(r['angle'] + 90)
-            eq_m -= (r['sym'] * ang_rad[0]) * (yn - yp)
-            eq_m += (r['sym'] * ang_rad[1]) * (xn - xp)
-    eq_m += Somma_M_ext
-    
-    equazioni_S0 = [eq_x, eq_y, eq_m]
-    eq_aux_S0_info = []
-    
-    for ci in cerniere_info:
-      nc = ci['nodo']
-      xc, yc = nodi[nc]
-      for _id_asta_ramo, nodi_ramo in ci['rami']:
-        eq_aux = 0
-        for r in reazioni_simboliche:
-            if _del_ramo(r['nodo'], nc, _id_asta_ramo, nodi_ramo, ci['attach']):
-                xr, yr = nodi[r['nodo']]
-                if r['tipo'] == 'Fx': eq_aux -= r['sym'] * (yr - yc)
-                elif r['tipo'] == 'Fy': eq_aux += r['sym'] * (xr - xc)
-                elif r['tipo'] == 'M': eq_aux += r['sym']
-                elif r['tipo'] == 'Fn':
-                    ang_rad = cs_ang(r['angle'] + 90)
-                    eq_aux -= (r['sym'] * ang_rad[0]) * (yr - yc)
-                    eq_aux += (r['sym'] * ang_rad[1]) * (xr - xc)
-
-        for p in dati_json.get('point_loads', []):
-            if _del_ramo(int(p['node_id']), nc, _id_asta_ramo, nodi_ramo, ci['attach']):
-                xp_, yp_ = nodi[int(p['node_id'])]
-                eq_aux += p.get('M', 0) + p.get('Fy', 0)*(xp_ - xc) - p.get('Fx', 0)*(yp_ - yc)
-
-        for el_load in dati_json.get('element_loads', []):
-            c = _carico(el_load)
-            if c is None: continue
-            n1_t, n2_t = int(c[0]['n1']), int(c[0]['n2'])
-            if (n1_t in nodi_ramo or n1_t == nc) and (n2_t in nodi_ramo or n2_t == nc) and not (n1_t == nc and n2_t == nc):
-                Rx, Ry, X_bar, Y_bar = _risultante(c)
-                eq_aux += Ry * (X_bar - xc) - Rx * (Y_bar - yc)
-        equazioni_S0.append(eq_aux)
-        eq_aux_S0_info.append((nc, _id_asta_ramo, nodi_ramo, eq_aux))
-        
-    soluzione_S0 = risolvi_sicuro(equazioni_S0, variabili, "S0")
-
-    img_s0_versi = plot_sistema_S0(nodi, elementi, reazioni_simboliche, soluzione_S0, "s0_versi.png", out_dir, "versi", con_unita=False)
-    img_s0_calc = plot_sistema_S0(nodi, elementi, reazioni_simboliche, soluzione_S0, "s0_calcolate.png", out_dir, "calcolate", con_unita=True)
-    img_s0_mono = plot_sistema_S0(nodi, elementi, reazioni_simboliche, soluzione_S0, "s0_monoassiali.png", out_dir, "monoassiali", con_unita=False)
-
-    report.append("<div style='text-align: center;'>")
-    report.append(f"<h4>S<sub>0</sub> &mdash; reazioni (scelta dei versi)</h4><img src='file:///{img_s0_versi}' width='600'><br>")
-    report.append(f"<h4>S<sub>0</sub> &mdash; reazioni calcolate</h4><img src='file:///{img_s0_calc}' width='600'><br>")
-    report.append(f"<h4>S<sub>0</sub> &mdash; riferimenti monoassiali (ascissa s)</h4><img src='file:///{img_s0_mono}' width='600'>")
-    report.append("</div>")
-
-    report.append("<div style='background-color: #f8f9fa; padding: 15px; border-left: 4px solid #0d6efd; margin-bottom: 15px;'>")
-    report.append(f"<h4>Equilibrio del Sistema S<sub>0</sub> (Polo Nodo {polo_id})</h4>")
-    righe_s0_eq = [
-        ("&Sigma;F<sub>x</sub> = 0", eq_x),
-        ("&Sigma;F<sub>y</sub> = 0", eq_y),
-        (f"&Sigma;M<sub>{polo_id}</sub> = 0", eq_m),
-    ]
-    for nc_, id_a_, nr_, eq_a_ in eq_aux_S0_info:
-        righe_s0_eq.append((f"&Sigma;M<sub>{nc_}</sub><sup>({_desc_tronco(nc_, id_a_, nr_)})</sup> = 0", eq_a_))
-    report.append(_blocco_equazioni_html(righe_s0_eq))
-    sol_s0_str = ", &nbsp; ".join(
-        f"<b>{sym_reaz_html(r['sym'])}</b> = {fmt_num(float(sp.N(soluzione_S0.get(r['sym'], 0))), 2)} {'N&middot;m' if r['tipo']=='M' else 'N'}"
-        for r in reazioni_simboliche
-    )
-    report.append(f"<p style='margin:8px 0 0 0;'><b>Soluzione S<sub>0</sub>:</b> {sol_s0_str}</p></div>")
-
     # ==========================================
-    # FASE 4: SISTEMA S1 (INCOGNITA UNITARIA)
+    # DECOMPOSIZIONE IN t TRONCHI RIGIDI + REAZIONI INTERNE ALLE CERNIERE
     # ==========================================
-    X1_valore_numerico = 0.0  # solo per la stampa
-    X1_exact = sp.Integer(0)   # valore ESATTO usato in tutte le espressioni (isostatiche: 0)
-    soluzione_S1 = {}
-    
-    if grado_iperstaticita > 0:
-        if tipo_svinc == 'M_int':
-            azione_S1_txt = "coppia di momenti interni unitari (flessione relativa)"
-        else:
-            azione_S1_txt = "coppia unitaria" if tipo_svinc == 'M' else f"forza {tipo_azione.lower().split()[1]} unitaria"
-            
-        report.append(f"<h2>4. Sistema S<sub>1</sub> &mdash; {azione_S1_txt} (X<sub>1</sub> = 1)</h2>")
-        
-        xs, ys = nodi[nodo_svinc]
-        Somma_Fx_S1 = X1_fx
-        Somma_Fy_S1 = X1_fy
-        if tipo_svinc == 'M_int':
-            Somma_M_S1 = 0
-        else:
-            Somma_M_S1 = X1_m + X1_fy * (xs - xp) - X1_fx * (ys - yp)
+    def _decomponi_tronchi():
+        el_by_id = {int(e['id']): e for e in elementi}
+        hinge_det = {ci['nodo']: {eid for eid, _ in ci['rami']} for ci in cerniere_info}
+        el_inc_n = {n_: [] for n_ in nodi}
+        for e_ in elementi:
+            el_inc_n[int(e_['n1'])].append(int(e_['id']))
+            el_inc_n[int(e_['n2'])].append(int(e_['id']))
 
-        eq_x_S1 = sum([r['sym'] for r in reazioni_simboliche if r['tipo'] == 'Fx']) + Somma_Fx_S1
-        eq_y_S1 = sum([r['sym'] for r in reazioni_simboliche if r['tipo'] == 'Fy']) + Somma_Fy_S1
-        for r in reazioni_simboliche:
-            if r['tipo'] == 'Fn':
-                ang_rad = cs_ang(r['angle'] + 90)
-                eq_x_S1 += r['sym'] * ang_rad[0]
-                eq_y_S1 += r['sym'] * ang_rad[1]
+        par_e = {int(e_['id']): int(e_['id']) for e_ in elementi}
+        def _find_e(x_):
+            while par_e[x_] != x_:
+                par_e[x_] = par_e[par_e[x_]]
+                x_ = par_e[x_]
+            return x_
+        def _union_e(a_, b_):
+            ra, rb = _find_e(a_), _find_e(b_)
+            if ra != rb:
+                par_e[rb] = ra
 
-        eq_m_S1 = sum([r['sym'] for r in reazioni_simboliche if r['tipo'] == 'M'])
-        for r in reazioni_simboliche:
-            xn, yn = nodi[r['nodo']]
-            if r['tipo'] == 'Fx': eq_m_S1 -= r['sym'] * (yn - yp)
-            if r['tipo'] == 'Fy': eq_m_S1 += r['sym'] * (xn - xp)
-            if r['tipo'] == 'Fn':
-                ang_rad = cs_ang(r['angle'] + 90)
-                eq_m_S1 -= (r['sym'] * ang_rad[0]) * (yn - yp)
-                eq_m_S1 += (r['sym'] * ang_rad[1]) * (xn - xp)
-        eq_m_S1 += Somma_M_S1
+        for v_ in nodi:
+            rig = [eid for eid in el_inc_n[v_] if eid not in hinge_det.get(v_, set())]
+            for i_ in range(1, len(rig)):
+                _union_e(rig[0], rig[i_])
 
-        equazioni_S1 = [eq_x_S1, eq_y_S1, eq_m_S1]
-        eq_aux_S1_info = []
-        
+        gruppi = {}
+        for e_ in elementi:
+            eid = int(e_['id'])
+            gruppi.setdefault(_find_e(eid), []).append(eid)
+
+        tronchi_raw = sorted(gruppi.values(), key=lambda ids: min(ids))
+        elem_to_tr = {}
+        tronchi = []
+        sup_nodi_set = {int(s_['node_id']): s_ for s_ in supports_n}
+        cern_nodi_set = {ci['nodo'] for ci in cerniere_info}
+
+        for k_, eids in enumerate(tronchi_raw):
+            eids_s = sorted(eids)
+            for eid in eids_s:
+                elem_to_tr[eid] = k_
+            all_nds = set()
+            for eid in eids_s:
+                el_ = el_by_id[eid]
+                all_nds.add(int(el_['n1'])); all_nds.add(int(el_['n2']))
+            tronchi.append({
+                'idx': k_ + 1,
+                'elems': [el_by_id[eid] for eid in eids_s],
+                'elem_ids': set(eids_s),
+                'all_nodes': all_nds,
+                'own_nodes': set(),
+            })
+
+        ci_by_node = {ci['nodo']: ci for ci in cerniere_info}
+        node_owner = {}
+        for v_ in nodi:
+            if v_ in ci_by_node:
+                ci = ci_by_node[v_]
+                if ci['attach'] is not None:
+                    tr_k = elem_to_tr[ci['attach']]
+                elif ci['carrier'] is not None:
+                    tr_k = elem_to_tr[ci['carrier']]
+                else:
+                    rig_e = next(eid for eid in el_inc_n[v_] if eid not in hinge_det[v_])
+                    tr_k = elem_to_tr[rig_e]
+            else:
+                tr_k = elem_to_tr[el_inc_n[v_][0]]
+            node_owner[v_] = tr_k
+            tronchi[tr_k]['own_nodes'].add(v_)
+
+        def _dir_verso(nid_s, el_):
+            altro = int(el_['n2']) if int(el_['n1']) == nid_s else int(el_['n1'])
+            dx = float(nodi[altro][0] - nodi[nid_s][0])
+            dy = float(nodi[altro][1] - nodi[nid_s][1])
+            L_ = math.hypot(dx, dy)
+            return (dx / L_, dy / L_) if L_ > 1e-9 else (1.0, 0.0)
+
+        hinge_pins = []
         for ci in cerniere_info:
-          nc = ci['nodo']
-          xc, yc = nodi[nc]
-          for _id_asta_ramo, nodi_ramo in ci['rami']:
-            eq_aux = 0
-            for r in reazioni_simboliche:
-                if _del_ramo(r['nodo'], nc, _id_asta_ramo, nodi_ramo, ci['attach']):
-                    xr, yr = nodi[r['nodo']]
-                    if r['tipo'] == 'Fx': eq_aux -= r['sym'] * (yr - yc)
-                    elif r['tipo'] == 'Fy': eq_aux += r['sym'] * (xr - xc)
-                    elif r['tipo'] == 'M': eq_aux += r['sym']
-                    elif r['tipo'] == 'Fn':
-                        ang_rad = cs_ang(r['angle'] + 90)
-                        eq_aux -= (r['sym'] * ang_rad[0]) * (yr - yc)
-                        eq_aux += (r['sym'] * ang_rad[1]) * (xr - xc)
-                    
-            if _del_ramo(nodo_svinc, nc, _id_asta_ramo, nodi_ramo, ci['attach']):
+            nc = ci['nodo']
+            if ci['carrier'] is not None:
+                eid_car = ci['carrier']
+            else:
+                eid_car = next(eid for eid in el_inc_n[nc] if eid not in hinge_det[nc])
+            t_carrier = elem_to_tr[eid_car]
+            dir_car = _dir_verso(nc, el_by_id[eid_car])
+            n_rami = len(ci['rami'])
+            for r_i, (id_asta_r, _) in enumerate(ci['rami'], 1):
+                t_branch = elem_to_tr[id_asta_r]
+                dir_br = _dir_verso(nc, el_by_id[id_asta_r])
+                if t_branch <= t_carrier:
+                    t_A, t_B = t_branch, t_carrier
+                    dir_A, dir_B = dir_br, dir_car
+                else:
+                    t_A, t_B = t_carrier, t_branch
+                    dir_A, dir_B = dir_car, dir_br
+                suff = f"{nc}" if n_rami == 1 else f"{nc}_{r_i}"
+                hinge_pins.append({
+                    'nodo': nc,
+                    'sym_H': sp.Symbol(f"Hc_{suff}"),
+                    'sym_V': sp.Symbol(f"Vc_{suff}"),
+                    't_A': t_A, 't_B': t_B,
+                    'dir_A': dir_A, 'dir_B': dir_B,
+                    'branch_elem': id_asta_r,
+                })
+
+        for tr in tronchi:
+            # Sceglie polo naturale per equilibrio del tronco: cerniera interna > incastro/cerniera > primo nodo
+            cern_tr = sorted(n_ for n_ in tr['all_nodes'] if n_ in cern_nodi_set)
+            if cern_tr:
+                tr['polo'] = cern_tr[0]
+            else:
+                sup_tr = sorted(
+                    (n_ for n_ in tr['own_nodes'] if n_ in sup_nodi_set),
+                    key=lambda n_: (-(int(bool(sup_nodi_set[n_].get('fix_u'))) + int(bool(sup_nodi_set[n_].get('fix_v'))) + int(bool(sup_nodi_set[n_].get('fix_w')))), n_)
+                )
+                tr['polo'] = sup_tr[0] if sup_tr else min(tr['all_nodes'])
+            aste_s = ", ".join(str(int(e['id'])) for e in tr['elems'])
+            nodi_s = ", ".join(str(n_) for n_ in sorted(tr['all_nodes']))
+            tr['desc'] = f"aste {aste_s}; nodi {nodi_s}"
+
+        return tronchi, node_owner, elem_to_tr, hinge_pins
+
+    tronchi_sys, node_owner_tr, elem_to_tr, hinge_pins = _decomponi_tronchi()
+    vars_cerniere = [s_ for hp in hinge_pins for s_ in (hp['sym_H'], hp['sym_V'])]
+    cerniere_plot = []
+    for hp in hinge_pins:
+        cerniere_plot.append({'nodo': hp['nodo'], 'dir': hp['dir_A'], 'colore': '#0d6efd', 'lato': 'A',
+                              'sign': 1, 'sym_H': hp['sym_H'], 'sym_V': hp['sym_V']})
+        cerniere_plot.append({'nodo': hp['nodo'], 'dir': hp['dir_B'], 'colore': '#9c36b5', 'lato': 'B',
+                              'sign': -1, 'sym_H': hp['sym_H'], 'sym_V': hp['sym_V']})
+
+    def _costruisci_sistema_tronchi(reaz_ext, con_carichi_reali=True, carico_X1=False):
+        blocchi_tr = []
+        eqs_all = []
+        for k_, tr in enumerate(tronchi_sys):
+            pk = tr['polo']
+            xpk, ypk = nodi[pk]
+            eq_x_k = sp.Integer(0)
+            eq_y_k = sp.Integer(0)
+            eq_m_k = sp.Integer(0)
+
+            for r in reaz_ext:
+                if node_owner_tr[r['nodo']] != k_:
+                    continue
+                xr, yr = nodi[r['nodo']]
+                if r['tipo'] == 'Fx':
+                    eq_x_k += r['sym']; eq_m_k -= r['sym'] * (yr - ypk)
+                elif r['tipo'] == 'Fy':
+                    eq_y_k += r['sym']; eq_m_k += r['sym'] * (xr - xpk)
+                elif r['tipo'] == 'M':
+                    eq_m_k += r['sym']
+                elif r['tipo'] == 'Fn':
+                    ca, sa = cs_ang(r['angle'] + 90)
+                    eq_x_k += r['sym'] * ca; eq_y_k += r['sym'] * sa
+                    eq_m_k += (r['sym'] * sa) * (xr - xpk) - (r['sym'] * ca) * (yr - ypk)
+
+            for hp in hinge_pins:
+                if hp['t_A'] == k_:
+                    sgn = 1
+                elif hp['t_B'] == k_:
+                    sgn = -1
+                else:
+                    continue
+                xc, yc = nodi[hp['nodo']]
+                eq_x_k += sgn * hp['sym_H']
+                eq_y_k += sgn * hp['sym_V']
+                eq_m_k += sgn * (hp['sym_V'] * (xc - xpk) - hp['sym_H'] * (yc - ypk))
+
+            if con_carichi_reali:
+                for p in dati_json.get('point_loads', []):
+                    nid_p = int(p['node_id'])
+                    if node_owner_tr[nid_p] != k_:
+                        continue
+                    xp_, yp_ = nodi[nid_p]
+                    fx_, fy_, mm_ = p.get('Fx', 0), p.get('Fy', 0), p.get('M', 0)
+                    eq_x_k += fx_; eq_y_k += fy_
+                    eq_m_k += mm_ + fy_ * (xp_ - xpk) - fx_ * (yp_ - ypk)
+                for el_load in dati_json.get('element_loads', []):
+                    c = _carico(el_load)
+                    if c is None: continue
+                    eid_c = int(c[0]['id'])
+                    if elem_to_tr[eid_c] != k_:
+                        continue
+                    Rx, Ry, X_bar, Y_bar = _risultante(c)
+                    eq_x_k += Rx; eq_y_k += Ry
+                    eq_m_k += Ry * (X_bar - xpk) - Rx * (Y_bar - ypk)
+
+            if carico_X1 and node_owner_tr.get(nodo_svinc) == k_:
                 xs_v, ys_v = nodi[nodo_svinc]
-                eq_aux += (X1_m if tipo_svinc == 'M' else 0) + X1_fy * (xs_v - xc) - X1_fx * (ys_v - yc)
-                
-            if tipo_svinc == 'M_int' and nodo_svinc == nc:
-                eq_aux += 1
-                
-            equazioni_S1.append(eq_aux)
-            eq_aux_S1_info.append((nc, _id_asta_ramo, nodi_ramo, eq_aux))
+                eq_x_k += X1_fx; eq_y_k += X1_fy
+                eq_m_k += (X1_m if tipo_svinc == 'M' else 0) + X1_fy * (xs_v - xpk) - X1_fx * (ys_v - ypk)
 
-        # --- Controllo: il sistema isostatico principale deve essere staticamente determinato ---
-        try:
-            A_chk, _b_chk = sp.linear_eq_to_matrix(equazioni_S1, variabili)
-            if A_chk.rank() < len(variabili):
-                report.append("<div style='background-color: #f8d7da; padding: 15px; border-left: 5px solid #dc3545; margin-bottom: 20px;'>")
-                report.append("<h4 style='color: #721c24; margin-top: 0;'>🛑 Incognita iperstatica non valida</h4>")
-                report.append("<p style='color: #721c24;'>Rimuovendo questo vincolo il <b>sistema principale risulta labile</b> (le reazioni restanti non sono determinabili dall'equilibrio, es. tre vincoli concorrenti in un punto o paralleli). Scegli un'altra incognita iperstatica.</p></div>")
-                return "\n".join(report), "", ""
-        except Exception:
-            pass
-        soluzione_S1 = risolvi_sicuro(equazioni_S1, variabili, "S1")
+            eqs_all.extend([eq_x_k, eq_y_k, eq_m_k])
+            blocchi_tr.append((tr, eq_x_k, eq_y_k, eq_m_k))
+        return eqs_all, blocchi_tr
 
-        X1_sym = sp.Symbol('X_1')
-        reazioni_simboliche_S1 = reazioni_simboliche.copy()
-        reazioni_simboliche_S1.append({'nodo': nodo_svinc, 'tipo': tipo_svinc, 'sym': X1_sym, 'angle': ang_X1})
-        
-        soluzione_plot_S1 = soluzione_S1.copy()
-        soluzione_plot_S1[X1_sym] = 1.0 
+    # --- Risoluzione S0 ed S1 e verifica labilità sistema principale ---
+    eqs_tronchi_S0, blocchi_S0 = _costruisci_sistema_tronchi(reazioni_simboliche, con_carichi_reali=True, carico_X1=False)
+    vars_tutte = variabili + vars_cerniere
+    try:
+        A_chk, _ = sp.linear_eq_to_matrix(eqs_tronchi_S0, vars_tutte)
+        if A_chk.rank() < len(vars_tutte):
+            report.append(_box_errore(
+                "Incognita iperstatica non valida",
+                "Rimuovendo questo vincolo il <b>sistema principale risulta labile</b> "
+                "(le reazioni restanti non sono determinabili dall'equilibrio). Scegli un'altra incognita iperstatica."
+            ))
+            return "\n".join(report), "", ""
+    except Exception:
+        pass
+    soluzione_S0 = risolvi_sicuro(eqs_tronchi_S0, vars_tutte, "S0")
 
-        img_s1_versi = plot_sistema_S0(nodi, elementi, reazioni_simboliche_S1, soluzione_plot_S1, "s1_versi.png", out_dir, "versi", con_unita=False)
-        img_s1_calc = plot_sistema_S0(nodi, elementi, reazioni_simboliche_S1, soluzione_plot_S1, "s1_calcolate.png", out_dir, "calcolate", con_unita=False)
-        img_s1_mono = plot_sistema_S0(nodi, elementi, reazioni_simboliche_S1, soluzione_plot_S1, "s1_monoassiali.png", out_dir, "monoassiali", con_unita=False)
-
-        report.append("<div style='text-align: center; margin-bottom: 25px;'>")
-        report.append(f"<h4>S<sub>1</sub> &mdash; forze applicate e reazioni incognite</h4><img src='file:///{img_s1_versi}' width='600'><br>")
-        report.append(f"<h4>S<sub>1</sub> &mdash; reazioni calcolate (equilibrio con X<sub>1</sub> = 1)</h4><img src='file:///{img_s1_calc}' width='600'><br>")
-        report.append(f"<h4>S<sub>1</sub> &mdash; riferimenti monoassiali (ascissa s)</h4><img src='file:///{img_s1_mono}' width='600'>")
-        report.append("</div>")
-
-        report.append("<div style='background-color: #f8f9fa; padding: 15px; border-left: 4px solid #dc3545; margin-bottom: 20px; border-radius: 4px;'>")
-        report.append(f"<h4>Equilibrio del Sistema S<sub>1</sub> (Polo Nodo {polo_id})</h4>")
-        righe_s1_eq = [
-            ("&Sigma;F<sub>x</sub> = 0", eq_x_S1),
-            ("&Sigma;F<sub>y</sub> = 0", eq_y_S1),
-            (f"&Sigma;M<sub>{polo_id}</sub> = 0", eq_m_S1),
-        ]
-        for nc_, id_a_, nr_, eq_a_ in eq_aux_S1_info:
-            righe_s1_eq.append((f"&Sigma;M<sub>{nc_}</sub><sup>({_desc_tronco(nc_, id_a_, nr_)})</sup> = 0", eq_a_))
-        report.append(_blocco_equazioni_html(righe_s1_eq))
-        sol_s1_str = ", &nbsp; ".join(
-            f"<b>{sym_reaz_html(r['sym'])}</b> = {fmt_num(float(sp.N(soluzione_S1.get(r['sym'], 0))), 2)}"
-            for r in reazioni_simboliche
-        )
-        report.append(f"<p style='margin:8px 0 0 0;'><b>Soluzione S<sub>1</sub> (adimensionale per X<sub>1</sub> = 1):</b> {sol_s1_str}</p></div>")
-    else:
-        report.append("<h2>4. Sistema S<sub>1</sub></h2><p>Non necessario (la struttura &egrave; isostatica).</p>")
+    soluzione_S1 = {}
+    blocchi_S1 = []
+    if grado_iperstaticita > 0:
+        eqs_tronchi_S1, blocchi_S1 = _costruisci_sistema_tronchi(reazioni_simboliche, con_carichi_reali=False, carico_X1=True)
+        soluzione_S1 = risolvi_sicuro(eqs_tronchi_S1, vars_tutte, "S1")
 
     # ==========================================
-    # FASE 5: SOLLECITAZIONI E RIFERIMENTI MONOASSIALI
+    # CALCOLO SOLLECITAZIONI M, T, N PER S0 E S1
     # ==========================================
-    report.append("<h2>5. Caratteristiche della sollecitazione (Studio Analitico M, T, N)</h2>")
-    
     Forze_S0 = {n: {'Fx': 0, 'Fy': 0, 'M': 0} for n in nodi}
     Forze_S1 = {n: {'Fx': 0, 'Fy': 0, 'M': 0} for n in nodi}
-    
     for p in dati_json.get('point_loads', []):
         nid = int(p.get('node_id'))
         Forze_S0[nid]['Fx'] += p.get('Fx', 0); Forze_S0[nid]['Fy'] += p.get('Fy', 0); Forze_S0[nid]['M'] += p.get('M', 0)
-        
     if grado_iperstaticita > 0:
         Forze_S1[nodo_svinc]['Fx'] += X1_fx
         Forze_S1[nodo_svinc]['Fy'] += X1_fy
         Forze_S1[nodo_svinc]['M'] += X1_m
-
     for r in reazioni_simboliche:
-        nid = r['nodo']
-        tipo_r = r['tipo']
+        nid = r['nodo']; tipo_r = r['tipo']
         val_S0 = soluzione_S0.get(r['sym'], 0)
-        
-        if tipo_r == 'Fx': 
-            Forze_S0[nid]['Fx'] += val_S0
-        elif tipo_r == 'Fy': 
-            Forze_S0[nid]['Fy'] += val_S0
-        elif tipo_r == 'M': 
-            Forze_S0[nid]['M'] += val_S0
+        if tipo_r == 'Fx': Forze_S0[nid]['Fx'] += val_S0
+        elif tipo_r == 'Fy': Forze_S0[nid]['Fy'] += val_S0
+        elif tipo_r == 'M': Forze_S0[nid]['M'] += val_S0
         elif tipo_r == 'Fn':
             ang_rad = cs_ang(r['angle'] + 90)
             Forze_S0[nid]['Fx'] += val_S0 * ang_rad[0]
             Forze_S0[nid]['Fy'] += val_S0 * ang_rad[1]
-            
         if grado_iperstaticita > 0:
             val_S1 = soluzione_S1.get(r['sym'], 0)
-            if tipo_r == 'Fx': 
-                Forze_S1[nid]['Fx'] += val_S1
-            elif tipo_r == 'Fy': 
-                Forze_S1[nid]['Fy'] += val_S1
-            elif tipo_r == 'M': 
-                Forze_S1[nid]['M'] += val_S1
+            if tipo_r == 'Fx': Forze_S1[nid]['Fx'] += val_S1
+            elif tipo_r == 'Fy': Forze_S1[nid]['Fy'] += val_S1
+            elif tipo_r == 'M': Forze_S1[nid]['M'] += val_S1
             elif tipo_r == 'Fn':
                 ang_rad = cs_ang(r['angle'] + 90)
                 Forze_S1[nid]['Fx'] += val_S1 * ang_rad[0]
                 Forze_S1[nid]['Fy'] += val_S1 * ang_rad[1]
 
-    M0_dict, M1_dict, T0_dict, N0_dict, T1_dict, N1_dict = {}, {}, {}, {}, {}, {}
-    
     def calcola_sollecitazioni(sistema_forze, el, is_S0=True):
         n1, n2 = int(el['n1']), int(el['n2'])
-        x1, y1 = nodi[n1]
-        x2, y2 = nodi[n2]
+        x1, y1 = nodi[n1]; x2, y2 = nodi[n2]
         L = hyp(x2 - x1, y2 - y1)
         s = sp.Symbol("s")
-        if L == 0: return sp.S(0), sp.S(0), sp.S(0)
-            
+        if L == 0:
+            return sp.S(0), sp.S(0), sp.S(0)
         cos_alpha = (x2 - x1) / L
         sin_alpha = (y2 - y1) / L
-        
-        visited = set()
-        stack = [n1]
+        visited = set(); stack = [n1]
         while stack:
             curr = stack.pop()
             if curr not in visited:
                 visited.add(curr)
                 for neighbor in adj[curr]:
-                    if neighbor != n2 and neighbor not in visited: stack.append(neighbor)
-                        
-        xc = x1 + cos_alpha * s
-        yc = y1 + sin_alpha * s
-        
+                    if neighbor != n2 and neighbor not in visited:
+                        stack.append(neighbor)
+        xc = x1 + cos_alpha * s; yc = y1 + sin_alpha * s
         M_s, Fx_sum, Fy_sum = 0, 0, 0
         for v in visited:
             fx, fy, m = sistema_forze[v]['Fx'], sistema_forze[v]['Fy'], sistema_forze[v]['M']
-            Fx_sum += fx
-            Fy_sum += fy
+            Fx_sum += fx; Fy_sum += fy
             M_s += m + fy * (nodi[v][0] - xc) - fx * (nodi[v][1] - yc)
-            
         if is_S0:
             t_ = sp.Symbol('t')
             for el_load in dati_json.get('element_loads', []):
@@ -2258,37 +2507,20 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
                 if c is None: continue
                 target_el, L_t, ux_t, uy_t, wx, wy, tipo_q = c
                 if target_el['id'] == el['id']:
-                    # carico sulla stessa asta: porzione tra 0 e s (contributo a M, T e N)
                     k_ = ux_t * wy - uy_t * wx
                     phi = _phi(tipo_q, t_, L_t)
                     Phi = sp.integrate(phi, (t_, 0, s))
                     M_s += k_ * sp.integrate((t_ - s) * phi, (t_, 0, s))
-                    Fx_sum += wx * Phi
-                    Fy_sum += wy * Phi
+                    Fx_sum += wx * Phi; Fy_sum += wy * Phi
                 elif int(target_el['n1']) in visited and int(target_el['n2']) in visited:
                     Rx, Ry, X_c, Y_c = _risultante(c)
-                    Fx_sum += Rx
-                    Fy_sum += Ry
+                    Fx_sum += Rx; Fy_sum += Ry
                     M_s += Ry * (X_c - xc) - Rx * (Y_c - yc)
-
         T_s = -sp.diff(M_s, s)
         N_s = -Fx_sum * cos_alpha - Fy_sum * sin_alpha
         return pulisci_espr(sp.simplify(M_s)), pulisci_espr(sp.simplify(T_s)), pulisci_espr(sp.simplify(N_s))
 
-    s_sym_t = sp.Symbol("s")
-    def _cella_tab_s5(expr_, L_, unita_):
-        f_html = pulisci_formula(expr_, decimale=False)
-        Lf_ = float(L_)
-        v0 = float(sp.N(expr_.subs(s_sym_t, 0)))
-        vL = float(sp.N(expr_.subs(s_sym_t, L_)))
-        if s_sym_t not in expr_.free_symbols:
-            return f"<span class='formula'>{f_html}</span>"
-        u_ = f" {unita_}" if unita_ else ""
-        return (
-            f"<span class='formula'>{f_html}</span>"
-            f"<br><small style='color:#495057;'>s=0: {fmt_num(v0, 2)}{u_} &rarr; s={Lf_:.2f}: {fmt_num(vL, 2)}{u_}</small>"
-        )
-
+    M0_dict, M1_dict, T0_dict, N0_dict, T1_dict, N1_dict = {}, {}, {}, {}, {}, {}
     for el in elementi:
         M0, T0, N0 = calcola_sollecitazioni(Forze_S0, el, True)
         if grado_iperstaticita > 0:
@@ -2299,115 +2531,261 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
         T0_dict[el['id']] = T0; N0_dict[el['id']] = N0
         T1_dict[el['id']] = T1; N1_dict[el['id']] = N1
 
-    report.append("<h3 style='color: #198754; margin-top: 20px; border-bottom: 2px solid #198754;'>5.1 Sistema Principale (S<sub>0</sub>) &mdash; Carichi Reali</h3>")
-    report.append("<table><tr>"
-                  "<th>Asta</th><th>Dominio s [m]</th>"
-                  "<th style='background-color:#e3f2fd;'>N<sub>0</sub>(s) [N]</th>"
-                  "<th style='background-color:#e8f5e9;'>T<sub>0</sub>(s) [N]</th>"
-                  "<th style='background-color:#ffebee;'>M<sub>0</sub>(s) [N&middot;m]</th></tr>")
-    for el in elementi:
-        L = hyp(nodi[int(el['n2'])][0] - nodi[int(el['n1'])][0], nodi[int(el['n2'])][1] - nodi[int(el['n1'])][1])
-        eid = el['id']
-        report.append(
-            f"<tr><td><b>Asta {eid}</b><br><small>({el['n1']} &rarr; {el['n2']})</small></td>"
-            f"<td>0 &le; s &le; {float(L):.2f}</td>"
-            f"<td>{_cella_tab_s5(N0_dict[eid], L, 'N')}</td>"
-            f"<td>{_cella_tab_s5(T0_dict[eid], L, 'N')}</td>"
-            f"<td>{_cella_tab_s5(M0_dict[eid], L, 'N&middot;m')}</td></tr>"
-        )
-    report.append("</table>")
+    # --- Helper condiviso per Sezione 3 (S0) e Sezione 4 (S1) ---
+    nodi_f = {k: (float(v[0]), float(v[1])) for k, v in nodi.items()}
+    s_sym_tab = sp.Symbol("s")
 
-    if grado_iperstaticita > 0:
-        report.append("<h3 style='color: #dc3545; margin-top: 20px; border-bottom: 2px solid #dc3545;'>5.2 Sistema Unitario (S<sub>1</sub>) &mdash; Incognita Virtuale Unitaria (X<sub>1</sub> = 1)</h3>")
-        report.append("<table><tr>"
-                      "<th>Asta</th><th>Dominio s [m]</th>"
-                      "<th style='background-color:#e3f2fd;'>N<sub>1</sub>(s)</th>"
-                      "<th style='background-color:#e8f5e9;'>T<sub>1</sub>(s)</th>"
-                      "<th style='background-color:#ffebee;'>M<sub>1</sub>(s)</th></tr>")
+    def _tabella_vincoli_esterni(sol_dict, con_unita, include_X1=False):
+        righe_sup = {}
+        for i_s, s_ in enumerate(supports_n):
+            nid_s = int(s_['node_id'])
+            note_extra = []
+            h_v, v_v, m_v = None, None, None
+            # Identifica componenti su questo vincolo
+            for r in reazioni_simboliche:
+                if r.get('sup_idx') != i_s:
+                    continue
+                val_r = float(sp.N(sol_dict.get(r['sym'], 0)))
+                if r['tipo'] == 'Fx': h_v = (h_v or 0.0) + val_r
+                elif r['tipo'] == 'Fy': v_v = (v_v or 0.0) + val_r
+                elif r['tipo'] == 'M': m_v = (m_v or 0.0) + val_r
+                elif r['tipo'] == 'Fn':
+                    ca, sa = cs_ang(r['angle'] + 90)
+                    h_v = (h_v or 0.0) + val_r * float(ca)
+                    v_v = (v_v or 0.0) + val_r * float(sa)
+                    note_extra.append(f"{sym_reaz_html(r['sym'])} = {fmt_num(val_r, 2)}{' N' if con_unita else ''}")
+            if include_X1 and grado_iperstaticita > 0:
+                if (tipo_svinc == 'Fn' and idx_X1_sup == i_s) or (tipo_svinc in ('Fx', 'Fy', 'M') and nid_s == nodo_svinc and s_.get({'Fx':'fix_u','Fy':'fix_v','M':'fix_w'}[tipo_svinc])):
+                    if tipo_svinc == 'Fx': h_v = (h_v or 0.0) + 1.0
+                    elif tipo_svinc == 'Fy': v_v = (v_v or 0.0) + 1.0
+                    elif tipo_svinc == 'M': m_v = (m_v or 0.0) + 1.0
+                    elif tipo_svinc == 'Fn':
+                        ca, sa = cs_ang(ang_X1 + 90)
+                        h_v = (h_v or 0.0) + float(ca); v_v = (v_v or 0.0) + float(sa)
+                    note_extra.append("X<sub>1</sub> = 1")
+            elif grado_iperstaticita > 0 and not include_X1:
+                if (tipo_svinc == 'Fn' and idx_X1_sup == i_s) or (tipo_svinc in ('Fx', 'Fy', 'M') and nid_s == nodo_svinc and s_.get({'Fx':'fix_u','Fy':'fix_v','M':'fix_w'}[tipo_svinc])):
+                    note_extra.append("incognita X<sub>1</sub> rimossa")
+            lbl_vin = f"Nodo {nid_s}" + (f" ({', '.join(note_extra)})" if note_extra else "")
+            righe_sup[i_s] = (lbl_vin, h_v, v_v, m_v)
+
+        u_f = " [N]" if con_unita else ""
+        u_m = " [N&middot;m]" if con_unita else ""
+        out = [f"<table><tr><th>Vincolo</th><th>H{u_f}</th><th>V{u_f}</th><th>M{u_m}</th></tr>"]
+        for i_s in sorted(righe_sup):
+            lbl, hv, vv, mv = righe_sup[i_s]
+            cH = f"<b>{fmt_num(hv, 2)}</b>" if hv is not None else "&mdash;"
+            cV = f"<b>{fmt_num(vv, 2)}</b>" if vv is not None else "&mdash;"
+            cM = f"<b>{fmt_num(mv, 2)}</b>" if mv is not None else "&mdash;"
+            out.append(f"<tr><td>{lbl}</td><td>{cH}</td><td>{cV}</td><td>{cM}</td></tr>")
+        out.append("</table>")
+        return "\n".join(out)
+
+    def _append_sezione_sistema(tag, tit_sec, reaz_plot, sol_dict, sol_plot, blocchi_tr, Md, Td, Nd, con_unita, accent_col):
+        report.append(f"<h2>{tit_sec}</h2>")
+
+        # 1. 3 schemi grafici globali
+        p_versi = f"{tag.lower()}_versi.png"
+        p_calc = f"{tag.lower()}_calcolate.png"
+        p_mono = f"{tag.lower()}_monoassiali.png"
+        i_versi = plot_sistema_S0(nodi, elementi, reaz_plot, sol_plot, p_versi, out_dir, "versi", con_unita=False, cerniere_plot=cerniere_plot)
+        i_calc = plot_sistema_S0(nodi, elementi, reaz_plot, sol_plot, p_calc, out_dir, "calcolate", con_unita=con_unita, cerniere_plot=cerniere_plot)
+        i_mono = plot_sistema_S0(nodi, elementi, reaz_plot, sol_plot, p_mono, out_dir, "monoassiali", con_unita=con_unita, cerniere_plot=cerniere_plot)
+
+        sub_tag = "S<sub>0</sub>" if tag == "S0" else "S<sub>1</sub>"
+        report.append(_img_block_html(f"<h4 style='margin:0;'>{sub_tag} &mdash; reazioni (scelta dei versi)</h4>", i_versi, 500))
+        report.append(_img_block_html(f"<h4 style='margin:0;'>{sub_tag} &mdash; reazioni calcolate</h4>", i_calc, 500))
+        report.append(_img_block_html(f"<h4 style='margin:0;'>{sub_tag} &mdash; riferimenti monoassiali (ascissa s)</h4>", i_mono, 500))
+
+        # 2. Tabella riassuntiva dei vincoli esterni
+        report.append(f"<h3>Reazioni vincolari esterne ({sub_tag})</h3>")
+        report.append(_tabella_vincoli_esterni(sol_dict, con_unita=con_unita, include_X1=(tag == "S1")))
+
+        # 3. Equilibrio esploso tronco per tronco + "Da cui:" su due colonne
+        report.append(f"<h3>Equilibrio esploso tronco per tronco ({sub_tag})</h3>")
+        report.append(f"<div style='background-color: #f8f9fa; padding: 14px; border-left: 4px solid {accent_col}; margin-bottom: 16px; border-radius: 4px;'>")
+        for tr, ex_k, ey_k, em_k in blocchi_tr:
+            pk = tr['polo']
+            report.append(f"<div style='page-break-inside: avoid; margin-bottom: 6px;'>")
+            report.append(f"<p style='margin: 8px 0 4px 0; color: {accent_col};'><b>TRATTO {tr['idx']}</b> &mdash; tronco ({tr['desc']}), polo dei momenti in <b>Nodo {pk}</b>:</p>")
+            report.append(_blocco_equazioni_html([
+                ("&Sigma;F<sub>x</sub> = 0", ex_k),
+                ("&Sigma;F<sub>y</sub> = 0", ey_k),
+                (f"&Sigma;M<sub>{pk}</sub> = 0", em_k),
+            ]))
+            report.append("</div>")
+
+        voci_est = []
+        for r in reazioni_simboliche:
+            val_r = float(sp.N(sol_dict.get(r['sym'], 0)))
+            un_r = (" N&middot;m" if r['tipo'] == 'M' else " N") if con_unita else ""
+            voci_est.append(f"<b>{sym_reaz_html(r['sym'])}</b> = {fmt_num(val_r, 2)}{un_r}")
+        voci_int = []
+        for hp in hinge_pins:
+            for sk in (hp['sym_H'], hp['sym_V']):
+                val_c = float(sp.N(sol_dict.get(sk, 0)))
+                un_c = " N" if con_unita else ""
+                voci_int.append(f"<b>{sym_reaz_html(sk)}</b> = {fmt_num(val_c, 2)}{un_c} <small>(su T{hp['t_A']+1}; opposta su T{hp['t_B']+1})</small>")
+        if not voci_int:
+            mid_e = (len(voci_est) + 1) // 2
+            col1, col2 = voci_est[:mid_e], voci_est[mid_e:]
+        else:
+            col1, col2 = voci_est, voci_int
+        report.append("<div style='page-break-inside: avoid;'>")
+        report.append("<p style='margin: 10px 0 4px 0;'><b>Da cui:</b></p>")
+        report.append(
+            "<table class='eq-table' style='width:100%; border:none; background:transparent;'><tr>"
+            f"<td style='width:50%; vertical-align:top; text-align:left; border:none; padding:2px 10px 2px 0;'>{'<br>'.join(col1)}</td>"
+            f"<td style='width:50%; vertical-align:top; text-align:left; border:none; padding:2px 0 2px 10px;'>{'<br>'.join(col2)}</td>"
+            "</tr></table></div></div>"
+        )
+
+        # 4. Tabella Azioni di estremita' delle aste
+        u_f = " [N]" if con_unita else ""
+        u_m = " [N&middot;m]" if con_unita else ""
+        idx_s = "0" if tag == "S0" else "1"
+        sub_p = f"<sub>{idx_s}</sub>"
+        report.append(f"<h3>Azioni di estremit&agrave; delle aste ({sub_tag})</h3>")
+        report.append(
+            f"<table><tr><th>Asta</th>"
+            f"<th>N<sub>{idx_s},i</sub>{u_f}</th><th>T<sub>{idx_s},i</sub>{u_f}</th><th>M<sub>{idx_s},i</sub>{u_m}</th>"
+            f"<th>N<sub>{idx_s},j</sub>{u_f}</th><th>T<sub>{idx_s},j</sub>{u_f}</th><th>M<sub>{idx_s},j</sub>{u_m}</th></tr>"
+        )
         for el in elementi:
-            L = hyp(nodi[int(el['n2'])][0] - nodi[int(el['n1'])][0], nodi[int(el['n2'])][1] - nodi[int(el['n1'])][1])
             eid = el['id']
+            L_ = hyp(nodi[int(el['n2'])][0] - nodi[int(el['n1'])][0], nodi[int(el['n2'])][1] - nodi[int(el['n1'])][1])
+            n_i = float(sp.N(Nd[eid].subs(s_sym_tab, 0))); n_j = float(sp.N(Nd[eid].subs(s_sym_tab, L_)))
+            t_i = float(sp.N(Td[eid].subs(s_sym_tab, 0))); t_j = float(sp.N(Td[eid].subs(s_sym_tab, L_)))
+            m_i = float(sp.N(Md[eid].subs(s_sym_tab, 0))); m_j = float(sp.N(Md[eid].subs(s_sym_tab, L_)))
             report.append(
-                f"<tr><td><b>Asta {eid}</b><br><small>({el['n1']} &rarr; {el['n2']})</small></td>"
-                f"<td>0 &le; s &le; {float(L):.2f}</td>"
-                f"<td>{_cella_tab_s5(N1_dict[eid], L, '')}</td>"
-                f"<td>{_cella_tab_s5(T1_dict[eid], L, '')}</td>"
-                f"<td>{_cella_tab_s5(M1_dict[eid], L, '')}</td></tr>"
+                f"<tr><td><b>Asta {eid}</b> <small>({el['n1']}&rarr;{el['n2']})</small></td>"
+                f"<td>{fmt_num(n_i, 2)}</td><td>{fmt_num(t_i, 2)}</td><td>{fmt_num(m_i, 2)}</td>"
+                f"<td>{fmt_num(n_j, 2)}</td><td>{fmt_num(t_j, 2)}</td><td>{fmt_num(m_j, 2)}</td></tr>"
             )
         report.append("</table>")
 
-    img_mom_glob = plot_momenti_S0_S1(nodi, elementi, M0_dict, M1_dict, grado_iperstaticita, out_dir)
-    tit_mom = "Diagrammi Globali di Momento Flettente M<sub>0</sub>(s) e M<sub>1</sub>(s) (Supporto per gli Integrali di Mohr)" if grado_iperstaticita > 0 else "Diagramma Globale di Momento Flettente M<sub>0</sub>(s)"
-    report.append(f"<div style='text-align: center; margin: 15px 0 20px 0;'><h4>{tit_mom}</h4><img src='file:///{img_mom_glob}' width='750'></div>")
+        # 5. Box ordinati per ogni asta con N, T, M (decimali puliti a 2 cifre)
+        report.append(f"<h3>Caratteristiche della sollecitazione per tratto ({sub_tag})</h3>")
+        for el in elementi:
+            eid = el['id']
+            L_ = hyp(nodi[int(el['n2'])][0] - nodi[int(el['n1'])][0], nodi[int(el['n2'])][1] - nodi[int(el['n1'])][1])
+            Lf = float(L_)
+            report.append(f"<div style='background-color: #f8f9fa; padding: 8px 12px; border: 1px solid #dee2e6; border-left: 4px solid {accent_col}; margin-bottom: 8px; border-radius: 4px; page-break-inside: avoid;'>")
+            report.append(f"<b>Asta {eid}</b> (Nodo {el['n1']} &rarr; Nodo {el['n2']}, 0 &le; s &le; {Lf:.2f} m):<br>")
+            report.append(
+                f"<span style='display:inline-block; margin-top:4px;'>"
+                f"N{sub_p}(s) = <span class='formula'>{pulisci_formula(Nd[eid], decimale=True)}</span>{u_f} &nbsp;|&nbsp; "
+                f"T{sub_p}(s) = <span class='formula'>{pulisci_formula(Td[eid], decimale=True)}</span>{u_f} &nbsp;|&nbsp; "
+                f"M{sub_p}(s) = <span class='formula'>{pulisci_formula(Md[eid], decimale=True)}</span>{u_m}"
+                f"</span></div>"
+            )
+
+        # 6. 3 Diagrammi globali del sistema
+        sub_u = "₀" if tag == "S0" else "₁"
+        tag_u = "S₀" if tag == "S0" else "S₁"
+        um_mpl = " [N·m]" if con_unita else ""
+        uf_mpl = " [N]" if con_unita else ""
+        p_diag_sys = _salva_trio_diagrammi(
+            nodi_f, elementi, Md, Td, Nd,
+            f"Momento flettente M{sub_u} — {tag_u}{um_mpl} (lato fibre tese)",
+            f"Taglio T{sub_u} — {tag_u}{uf_mpl}",
+            f"Sforzo normale N{sub_u} — {tag_u}{uf_mpl}",
+            f"plv_diag_{tag}.png", out_dir
+        )
+        # Normalizza etichette titoli nei grafici con notazione pulita
+        report.append(_img_block_html(
+            f"<h4 style='margin:0;'>Diagrammi globali ({sub_tag}): Momento M, Taglio T, Sforzo Normale N</h4>",
+            p_diag_sys, 560, page_break_before=True
+        ))
 
     # ==========================================
-    # FASE 6 E 7: PLV E CONGRUENZA
+    # SEZIONE 3: SISTEMA S0
+    # ==========================================
+    _append_sezione_sistema(
+        "S0", "3. Sistema S<sub>0</sub> &mdash; carichi reali sulla struttura isostatica",
+        reazioni_simboliche, soluzione_S0, soluzione_S0, blocchi_S0,
+        M0_dict, T0_dict, N0_dict, con_unita=True, accent_col="#0d6efd"
+    )
+
+    # ==========================================
+    # SEZIONE 4: SISTEMA S1
+    # ==========================================
+    X1_valore_numerico = 0.0
+    X1_exact = sp.Integer(0)
+    if grado_iperstaticita > 0:
+        X1_sym = sp.Symbol('X_1')
+        reazioni_simboliche_S1 = reazioni_simboliche.copy()
+        reazioni_simboliche_S1.append({'nodo': nodo_svinc, 'tipo': tipo_svinc, 'sym': X1_sym, 'angle': ang_X1})
+        soluzione_plot_S1 = soluzione_S1.copy()
+        soluzione_plot_S1[X1_sym] = 1.0
+        _append_sezione_sistema(
+            "S1", "4. Sistema S<sub>1</sub> &mdash; incognita unitaria (X<sub>1</sub> = 1)",
+            reazioni_simboliche_S1, soluzione_S1, soluzione_plot_S1, blocchi_S1,
+            M1_dict, T1_dict, N1_dict, con_unita=False, accent_col="#dc3545"
+        )
+    else:
+        report.append("<h2>4. Sistema S<sub>1</sub> &mdash; incognita unitaria</h2><p>Non necessario (la struttura &egrave; isostatica).</p>")
+
+    # ==========================================
+    # SEZIONE 5 & 6: COEFFICIENTI PLV (TABELLA COMPATTA) + CONGRUENZA CON CEDIMENTI
     # ==========================================
     if grado_iperstaticita > 0:
-        report.append("<h2>6. Coefficienti di deformabilità, impostazione degli integrali (PLV)</h2>")
-        report.append("<div style='background-color: #e2e3e5; padding: 10px; border-left: 4px solid #6c757d; margin-bottom: 15px;'>")
-        report.append("<b>Formula generale Integrali di Mohr (solo flessione):</b><br>")
-        report.append("<span class='formula'>&delta;<sub>ij</sub> = &int; [M<sub>i</sub>(s) &middot; M<sub>j</sub>(s) / EI] ds</span>")
-        report.append("</div>")
-        
+        report.append("<h2>5. Coefficienti di deformabilit&agrave; &mdash; Impostazione degli integrali (PLV)</h2>")
+        report.append("<div style='background-color: #e2e3e5; padding: 10px 14px; border-left: 4px solid #6c757d; margin-bottom: 14px;'>")
+        report.append("<b>Formule generali di Mohr (solo flessione):</b><br>")
+        report.append("<span class='formula'>&delta;<sub>10</sub> = (1/EI) &Sigma; &int;<sub>0</sub><sup>L</sup> M<sub>0</sub>(s)&middot;M<sub>1</sub>(s) ds</span>"
+                      " &nbsp;&nbsp;e&nbsp;&nbsp; "
+                      "<span class='formula'>&delta;<sub>11</sub> = (1/EI) &Sigma; &int;<sub>0</sub><sup>L</sup> M<sub>1</sub>(s)<sup>2</sup> ds</span></div>")
+
         _mat_d, _sec_d0 = dati_json.get('material', {}), dati_json.get('section', {})
-        if 'EI' in _mat_d:
-            EI_val = _mat_d['EI']
-        else:
-            EI_val = (_mat_d.get('E', 2.1e11) * (_sec_d0.get('b', 0.2) * _sec_d0.get('h', 0.4)**3) / 12)
-        delta_10, delta_11 = 0, 0
-        
-        report.append("<div style='background-color: #f8f9fa; padding: 15px; border-left: 4px solid #6c757d; margin-bottom: 20px; border-radius: 4px;'>")
-        report.append("<h4>Impostazione degli Integrali di Mohr tratto per tratto:</h4><ul>")
-        aste_M1_nulle = []
+        EI_val = _mat_d['EI'] if 'EI' in _mat_d else (_mat_d.get('E', 2.1e11) * (_sec_d0.get('b', 0.2) * _sec_d0.get('h', 0.4)**3) / 12)
+        ei_noto_reale = (modalita == "verifica") or ('EI' in _mat_d)
+        delta_10, delta_11 = sp.Integer(0), sp.Integer(0)
+
+        report.append("<table><tr><th>Asta</th><th>L [m]</th><th>M<sub>0</sub>(s) [N&middot;m]</th><th>M<sub>1</sub>(s)</th>"
+                      "<th>&int;<sub>0</sub><sup>L</sup> M<sub>0</sub>&middot;M<sub>1</sub> ds</th>"
+                      "<th>&int;<sub>0</sub><sup>L</sup> M<sub>1</sub><sup>2</sup> ds</th></tr>")
         for el in elementi:
             x_sym = sp.Symbol("s")
             L = hyp(nodi[int(el['n2'])][0] - nodi[int(el['n1'])][0], nodi[int(el['n2'])][1] - nodi[int(el['n1'])][1])
             M0_expr, M1_expr = M0_dict[el['id']], M1_dict[el['id']]
-
-            if sp.simplify(M1_expr) == 0:
-                aste_M1_nulle.append(el['id'])
-                continue
-
-            d10_tratto = sp.integrate(M0_expr * M1_expr, (x_sym, 0, L))
-            d11_tratto = sp.integrate(M1_expr * M1_expr, (x_sym, 0, L))
-            d10_str = fmt_num(float(sp.N(d10_tratto)), 2).replace("-", "&minus;")
-            d11_str = fmt_num(float(sp.N(d11_tratto)), 2).replace("-", "&minus;")
-            
-            report.append(f"<li style='margin-bottom: 12px;'><b>Asta {el['id']} (L = {float(L):.2f} m):</b><br>")
-            report.append(f"&delta;<sub>10</sub> = (1/EI) &int;<sub>0</sub><sup>{float(L):.2f}</sup> [ {pulisci_formula(M0_expr)} ] &middot; [ {pulisci_formula(M1_expr)} ] ds = <span class='formula'>{d10_str} / EI</span><br>")
-            report.append(f"&delta;<sub>11</sub> = (1/EI) &int;<sub>0</sub><sup>{float(L):.2f}</sup> [ {pulisci_formula(M1_expr)} ]<sup>2</sup> ds = <span class='formula'>{d11_str} / EI</span></li>")
-            
-            delta_10 += d10_tratto
-            delta_11 += d11_tratto
-
-        if aste_M1_nulle:
-            pref_a = "Asta" if len(aste_M1_nulle) == 1 else "Aste"
-            elenco_a = ", ".join(str(x) for x in aste_M1_nulle)
-            report.append(f"<li style='margin-bottom: 10px;'><b>{pref_a} {elenco_a}:</b> M<sub>1</sub>(s) = 0 &rArr; <span class='formula'>&delta;<sub>10</sub> = 0, &delta;<sub>11</sub> = 0</span></li>")
-
-        report.append("</ul></div>")
+            d10_t = sp.integrate(M0_expr * M1_expr, (x_sym, 0, L))
+            d11_t = sp.integrate(M1_expr * M1_expr, (x_sym, 0, L))
+            delta_10 += d10_t; delta_11 += d11_t
+            report.append(
+                f"<tr><td><b>Asta {el['id']}</b></td><td>{float(L):.2f}</td>"
+                f"<td><span class='formula'>{pulisci_formula(M0_expr, decimale=True)}</span></td>"
+                f"<td><span class='formula'>{pulisci_formula(M1_expr, decimale=True)}</span></td>"
+                f"<td>{fmt_num(float(sp.N(d10_t)), 3)}</td>"
+                f"<td>{fmt_num(float(sp.N(d11_t)), 3)}</td></tr>"
+            )
         delta_10 = sp.simplify(delta_10); delta_11 = sp.simplify(delta_11)
-        if delta_11 == 0 or abs(float(delta_11)) < 1e-14 * max(1.0, float(sum(L_ ** 3 for L_ in [hyp(nodi[int(e_['n2'])][0] - nodi[int(e_['n1'])][0], nodi[int(e_['n2'])][1] - nodi[int(e_['n1'])][1]) for e_ in elementi]))):
-            stop("Calcolo impossibile: &delta;<sub>11</sub> = 0",
-                 "L'incognita iperstatica scelta non produce momento flettente nel sistema S<sub>1</sub> (M<sub>1</sub> &equiv; 0): "
-                 "l'equazione di congruenza non può determinare X<sub>1</sub>. Scegli un'altra incognita iperstatica. "
-                 "Nessun risultato numerico viene mostrato per evitare valori falsi.")
-        report.append("<p>Sommando i contributi flessionali di tutti i tratti si ottiene:</p>")
-        report.append("<div style='padding: 15px; border: 1px dashed #6c757d; display: inline-block; margin-bottom: 20px; background-color: #ffffff;'>")
-        report.append(f"<b>&delta;<sub>10</sub></b> = <span class='formula'>{fmt_num(float(sp.N(delta_10)), 2).replace('-', '&minus;')} / EI</span><br><br>")
-        report.append(f"<b>&delta;<sub>11</sub></b> = <span class='formula'>{fmt_num(float(sp.N(delta_11)), 2).replace('-', '&minus;')} / EI</span>")
-        report.append("</div>")
+        report.append(
+            f"<tr style='background-color:#eef4ff; font-weight:bold;'>"
+            f"<td colspan='4' style='text-align:right;'>Totale:</td>"
+            f"<td>{fmt_num(float(sp.N(delta_10)), 3)}</td>"
+            f"<td>{fmt_num(float(sp.N(delta_11)), 3)}</td></tr></table>"
+        )
 
-        # ------------------------------------------------------------------
-        # DISTORSIONI: variazioni termiche, cedimenti vincolari, rotazioni imposte
-        #   eta = (d10 + X1*d11)/EI + Dtermico + Dassiale - sum(R1_i * delta_i)
-        # ------------------------------------------------------------------
+        if delta_11 == 0 or abs(float(delta_11)) < 1e-14 * max(1.0, float(sum(L_**3 for L_ in [hyp(nodi[int(e_['n2'])][0]-nodi[int(e_['n1'])][0], nodi[int(e_['n2'])][1]-nodi[int(e_['n1'])][1]) for e_ in elementi]))):
+            stop("Calcolo impossibile: &delta;<sub>11</sub> = 0",
+                 "L'incognita iperstatica scelta non produce momento flettente in S<sub>1</sub> (M<sub>1</sub> &equiv; 0). Scegli un'altra incognita.")
+
+        d10_num = float(sp.N(delta_10)); d11_num = float(sp.N(delta_11))
+        un_d10 = "rad" if tipo_svinc in ('M', 'M_int') else "m"
+        un_d11 = "rad/(N&middot;m)" if tipo_svinc in ('M', 'M_int') else "m/N"
+        extra_d10 = f" = <b>{fmt_sci_html(d10_num / float(EI_val))} {un_d10}</b>" if ei_noto_reale else ""
+        extra_d11 = f" = <b>{fmt_sci_html(d11_num / float(EI_val))} {un_d11}</b>" if ei_noto_reale else ""
+        report.append("<div style='padding: 12px 15px; border: 1px dashed #6c757d; margin-bottom: 18px; background-color: #ffffff;'>")
+        report.append(f"<b>&delta;<sub>10</sub></b> = <span class='formula'>{fmt_num(d10_num, 3).replace('-', '&minus;')} / EI</span>{extra_d10}<br>")
+        report.append(f"<b>&delta;<sub>11</sub></b> = <span class='formula'>{fmt_num(d11_num, 3).replace('-', '&minus;')} / EI</span>{extra_d11}</div>")
+
+        # --- DISTORSIONI (cedimenti vincolari e termiche) ---
         alpha_mat = ex(dati_json.get('material', {}).get('alpha', 0))
         h_sez_T = ex(dati_json.get('section', {}).get('h', 0.4))
         s_sym_d = sp.Symbol("s")
         termine_T, termine_N = sp.Integer(0), sp.Integer(0)
-        KT_sum = sp.Integer(0)      # sum(alpha*(T+ - T-)*int M1 ds): il termine termico flessionale vale KT_sum/h (serve al dimensionamento)
+        KT_sum = sp.Integer(0)
         righe_term = []
         for tl in dati_json.get('thermal_loads', []):
             eid = int(tl['elem_id'])
@@ -2423,7 +2801,7 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
             termine_T += kappa_T * int_M1
             KT_sum += alpha_t * (T_pos - T_neg) * int_M1
             termine_N += eps_T * int_N1
-            righe_term.append(f"Asta {eid}: &kappa;<sub>T</sub> = &alpha;(T<sub>+</sub>&minus;T<sub>&minus;</sub>)/h = {fmt_sci_html(float(kappa_T))} m<sup>&minus;1</sup> &rarr; &int;M<sub>1</sub>&kappa;<sub>T</sub>ds = {fmt_sci_html(float(kappa_T*int_M1))}"
+            righe_term.append(f"Asta {eid}: &kappa;<sub>T</sub> = {fmt_sci_html(float(kappa_T))} m<sup>&minus;1</sup> &rarr; &int;M<sub>1</sub>&kappa;<sub>T</sub>ds = {fmt_sci_html(float(kappa_T*int_M1))}"
                               + (f"; &epsilon;<sub>T</sub> = {fmt_sci_html(float(eps_T))} &rarr; &int;N<sub>1</sub>&epsilon;<sub>T</sub>ds = {fmt_sci_html(float(eps_T*int_N1))}" if abs(eps_T) > 0 else ""))
 
         sup_map = {}
@@ -2440,40 +2818,39 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
             if dval != 0:
                 R1v = ex(soluzione_S1.get(r_['sym'], 0))
                 somma_Rd += R1v * dval
-                righe_ced.append(f"Nodo {r_['nodo']} ({sym_reaz_html(r_['sym'])}): R<sub>1</sub> = {fmt_num(float(R1v), 2)}, &delta; imposto = {fmt_sci_html(float(dval))} &rarr; R<sub>1</sub>&middot;&delta; = {fmt_sci_html(float(R1v*dval))}")
+                u_d = "rad" if r_['tipo'] == 'M' else "m"
+                righe_ced.append(f"Nodo {r_['nodo']} ({sym_reaz_html(r_['sym'])}): R<sub>1</sub> = {fmt_num(float(R1v), 2)}, &delta;<sub>c</sub> = {fmt_sci_html(float(dval))} {u_d} &rarr; R<sub>1</sub>&middot;&delta;<sub>c</sub> = {fmt_sci_html(float(R1v*dval))} {un_d10}")
         eta_X1 = sp.Integer(0)
         if tipo_svinc == 'Fn' and idx_X1_sup is not None:
             eta_X1 = ex(supports_n[idx_X1_sup].get('delta_n', 0))
         elif tipo_svinc in chiavi_delta:
             eta_X1 = ex(sup_map.get(nodo_svinc, {}).get(chiavi_delta[tipo_svinc], 0))
-        ha_distorsioni = bool(righe_term or righe_ced or eta_X1 != 0)
-        dip_ced = bool(righe_ced or eta_X1 != 0)
-        dip_term = bool(righe_term)
-        termine_noto_dist = EI_val * (eta_X1 - termine_T - termine_N + somma_Rd)
-        if ha_distorsioni:
-            report.append("<h2>6-bis. Distorsioni: variazioni termiche, cedimenti vincolari, rotazioni imposte</h2>")
-            report.append("<div style='background-color:#fff3cd; padding:12px; border-left:4px solid #ffc107; margin-bottom:15px;'>")
-            report.append("<b>PLV con distorsioni (sistema S<sub>1</sub> sulle deformazioni reali):</b><br>")
-            report.append("<span class='formula'>&eta;<sub>1</sub> = (&delta;<sub>10</sub> + X<sub>1</sub>&delta;<sub>11</sub>)/EI + &int;M<sub>1</sub>&kappa;<sub>T</sub>ds + &int;N<sub>1</sub>&epsilon;<sub>T</sub>ds &minus; &Sigma;R<sub>1,i</sub>&middot;&delta;<sub>i</sub></span><br>")
-            report.append("dove &eta;<sub>1</sub> &egrave; lo spostamento imposto nel punto/direzione di X<sub>1</sub> (cedimento del vincolo rimosso, altrimenti 0), "
-                          "R<sub>1,i</sub> sono le reazioni di S<sub>1</sub> sui vincoli che cedono, &delta;<sub>i</sub> i cedimenti/rotazioni imposti.<ul>")
-            for r_txt in righe_term: report.append(f"<li>{r_txt}</li>")
-            for r_txt in righe_ced: report.append(f"<li>{r_txt}</li>")
-            if eta_X1 != 0: report.append(f"<li>Vincolo rimosso (X<sub>1</sub>) con cedimento imposto &eta;<sub>1</sub> = {fmt_sci_html(float(eta_X1))}</li>")
-            report.append("</ul></div>")
+        if eta_X1 != 0:
+            u_x = "rad" if tipo_svinc in ('M', 'M_int') else "m"
+            righe_ced.append(f"Vincolo degradato X<sub>1</sub> (Nodo {nodo_svinc}): R<sub>1</sub> = 1, &delta;<sub>c</sub> = {fmt_sci_html(float(eta_X1))} {u_x} &rarr; 1&middot;&delta;<sub>c</sub> = {fmt_sci_html(float(eta_X1))} {un_d10}")
 
-        report.append("<h2>7. Equazione di Congruenza e Calcolo Incognita Iperstatica</h2>")
-        report.append("<div style='background-color: #e2e3e5; padding: 10px; border-left: 4px solid #dc3545; margin-bottom: 15px;'>")
-        report.append("<b>Equazione di congruenza e formula risolutiva:</b><br>")
-        if ha_distorsioni:
-            report.append("<span class='formula'>&delta;<sub>10</sub> + X<sub>1</sub>&delta;<sub>11</sub> = EI&middot;(&eta;<sub>1</sub> &minus; &int;M<sub>1</sub>&kappa;<sub>T</sub>ds &minus; &int;N<sub>1</sub>&epsilon;<sub>T</sub>ds + &Sigma;R<sub>1,i</sub>&delta;<sub>i</sub>)</span><br>")
-            report.append(f"<span class='formula'>EI&middot;(&hellip;) = {fmt_num(float(termine_noto_dist), 2)} N&middot;m<sup>3</sup> &rArr; X<sub>1</sub> = [EI&middot;(&hellip;) &minus; &delta;<sub>10</sub>] / &delta;<sub>11</sub></span></div>")
-        else:
-            report.append("<span class='formula'>&delta;<sub>10</sub> + X<sub>1</sub> &middot; &delta;<sub>11</sub> = 0  &rArr;  X<sub>1</sub> = &minus;&delta;<sub>10</sub> / &delta;<sub>11</sub></span></div>")
-        
-        X1_sym = sp.Symbol('X1')
+        L_ev_exact = eta_X1 + somma_Rd
+        ha_distorsioni = bool(righe_term or righe_ced)
+        dip_ced = bool(righe_ced)
+        dip_term = bool(righe_term)
+        termine_noto_dist = EI_val * (L_ev_exact - termine_T - termine_N)
+
+        report.append("<h2>6. Equazione di congruenza e calcolo di X<sub>1</sub></h2>")
+        report.append("<div style='background-color: #f8f9fa; padding: 12px 15px; border-left: 4px solid #dc3545; margin-bottom: 14px;'>")
+        if righe_ced:
+            report.append("<b>Lavoro esterno virtuale per cedimenti vincolari (L<sub>ev</sub> = &Sigma; R<sub>1,k</sub>&middot;&delta;<sub>c,k</sub>):</b><ul style='margin:4px 0 8px 0;'>")
+            for r_txt in righe_ced:
+                report.append(f"<li>{r_txt}</li>")
+            report.append(f"</ul><b>L<sub>ev</sub> = {fmt_sci_html(float(L_ev_exact))} {un_d10}</b><br><br>")
+        if righe_term:
+            report.append("<b>Contributo variazioni termiche:</b><ul style='margin:4px 0 8px 0;'>")
+            for r_txt in righe_term:
+                report.append(f"<li>{r_txt}</li>")
+            report.append("</ul>")
+
+        X1_sym_sol = sp.Symbol('X1')
         try:
-            soluzione_X1 = sp.solve(sp.Eq(delta_10 + X1_sym * delta_11, termine_noto_dist), X1_sym)
+            soluzione_X1 = sp.solve(sp.Eq(delta_10 + X1_sym_sol * delta_11, termine_noto_dist), X1_sym_sol)
         except Exception as e:
             stop("Errore nell'equazione di congruenza", f"{e}")
         if not soluzione_X1:
@@ -2481,143 +2858,115 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
         X1_exact = pulisci_espr(sp.simplify(soluzione_X1[0]))
         X1_valore_numerico = float(X1_exact)
         unita_X1 = "N&middot;m" if tipo_svinc in ('M', 'M_int') else "N"
-        report.append("<div style='background-color:#d1e7dd; color:#0f5132; padding:15px; border-left: 5px solid #198754; border-radius: 4px; margin-top: 15px;'>")
-        report.append("<b>Soluzione dell'equazione (Valore dell'incognita iperstatica):</b><br>")
-        report.append(f"<span style='font-size:20px;'><b>X<sub>1</sub> = {fmt_num(X1_valore_numerico, 2)} {unita_X1}</b></span></div>")
+
+        if righe_term:
+            report.append("<b>Equazione di congruenza:</b><br>"
+                          "<span class='formula'>(&delta;<sub>10</sub> + X<sub>1</sub>&middot;&delta;<sub>11</sub>)/EI + &int;M<sub>1</sub>&kappa;<sub>T</sub>ds + &int;N<sub>1</sub>&epsilon;<sub>T</sub>ds = L<sub>ev</sub></span><br>"
+                          f"<span class='formula'>X<sub>1</sub> = [EI&middot;(L<sub>ev</sub> &minus; L<sub>th</sub>) &minus; {fmt_num(d10_num, 2)}] / {fmt_num(d11_num, 2)} = {fmt_num(X1_valore_numerico, 2)} {unita_X1}</span>")
+        elif righe_ced:
+            lev_ei = float(sp.N(EI_val * L_ev_exact))
+            report.append("<b>Equazione di congruenza:</b><br>"
+                          "<span class='formula'>(&delta;<sub>10</sub> + X<sub>1</sub>&middot;&delta;<sub>11</sub>)/EI = L<sub>ev</sub> &rArr; &delta;<sub>10</sub> + X<sub>1</sub>&middot;&delta;<sub>11</sub> = EI&middot;L<sub>ev</sub></span><br>"
+                          f"<span class='formula'>X<sub>1</sub> = ({fmt_num(lev_ei, 2)} &minus; ({fmt_num(d10_num, 2)})) / {fmt_num(d11_num, 2)} = {fmt_num(X1_valore_numerico, 2)} {unita_X1}</span>")
+        else:
+            report.append("<b>Equazione di congruenza (vincoli rigidi, nessun cedimento):</b><br>"
+                          "<span class='formula'>&delta;<sub>10</sub> + X<sub>1</sub> &middot; &delta;<sub>11</sub> = 0 &rArr; X<sub>1</sub> = &minus;&delta;<sub>10</sub> / &delta;<sub>11</sub></span><br>"
+                          f"<span class='formula'>X<sub>1</sub> = &minus;({fmt_num(d10_num, 2)}) / {fmt_num(d11_num, 2)} = {fmt_num(X1_valore_numerico, 2)} {unita_X1}</span>")
+        report.append("</div>")
+        report.append(
+            "<div style='background-color:#d1e7dd; color:#0f5132; padding:12px 15px; border-left: 5px solid #198754; border-radius: 4px; margin-bottom: 18px;'>"
+            f"<span style='font-size:18px;'><b>X<sub>1</sub> = {fmt_num(X1_valore_numerico, 2)} {unita_X1}</b></span></div>"
+        )
     else:
         unita_X1 = "N"
-        report.append("<h2>6. Integrazione PLV non necessaria</h2>")
-        report.append("<p>La struttura è <b>isostatica</b>. Non ci sono incognite iperstatiche da risolvere con il Principio dei Lavori Virtuali.</p>")
-        report.append("<h2>7. Congruenza non necessaria</h2>")
-        report.append("<p>Le sollecitazioni calcolate nel sistema reale S<sub>0</sub> sono definitive e verranno usate direttamente per il dimensionamento o la verifica.</p>")
+        report.append("<h2>5. Coefficienti di deformabilit&agrave; (PLV)</h2><p>Non necessari (la struttura &egrave; isostatica).</p>")
+        report.append("<h2>6. Equazione di congruenza</h2><p>Non necessaria (la struttura &egrave; isostatica).</p>")
 
-# ==========================================
-# FASE 8: SOLLECITAZIONI FINALI TRATTO PER TRATTO (Sovrapposizione)
-# ==========================================
-    if X1_valore_numerico is not None:
-        report.append("<h2>8. Caratteristiche finali della sollecitazione per tratto (M, T, N reali)</h2>")
+    # ==========================================
+    # SEZIONE 7: SISTEMA REALE — SOVRAPPOSIZIONE S = S0 + X1 * S1
+    # ==========================================
+    report.append("<h2>7. Sistema reale &mdash; sovrapposizione S = S<sub>0</sub> + X<sub>1</sub> &middot; S<sub>1</sub></h2>")
+
+    nome_sym = {'Fx': 'H', 'Fy': 'V', 'M': 'M', 'Fn': 'R'}
+    def _nome_reaz(tipo_, nodo_, sym_=None):
+        parti_ = str(sym_).split('_') if sym_ is not None else []
+        if tipo_ == 'Fn':
+            suff = f"n{nodo_}.{parti_[2]}" if len(parti_) == 3 else f"n{nodo_}"
+            return f"R<sub>{suff}</sub>"
+        return f"{nome_sym[tipo_]}<sub>{nodo_}</sub>"
+
+    reaz_fin = []
+    soluzione_reale_plot = {}
+    for r in reazioni_simboliche:
+        v = soluzione_S0.get(r['sym'], 0)
         if grado_iperstaticita > 0:
-            report.append(f"<p>Avendo ricavato <b>X<sub>1</sub> = {fmt_num(X1_valore_numerico, 2)} {unita_X1}</b>, si calcolano le sollecitazioni reali definitive per sovrapposizione degli effetti:<br>")
-            report.append("M(s) = M<sub>0</sub>(s) + X<sub>1</sub>&middot;M<sub>1</sub>(s), &nbsp; T(s) = T<sub>0</sub>(s) + X<sub>1</sub>&middot;T<sub>1</sub>(s), &nbsp; N(s) = N<sub>0</sub>(s) + X<sub>1</sub>&middot;N<sub>1</sub>(s)</p>")
-        
-        s_sym_8 = sp.Symbol("s")
-        for el in elementi:
-            el_id = el['id']
-            L = hyp(nodi[int(el['n2'])][0] - nodi[int(el['n1'])][0], nodi[int(el['n2'])][1] - nodi[int(el['n1'])][1])
-            Lf = float(L)
-            
-            M_fin = sp.expand(pulisci_espr(M0_dict[el_id] + X1_exact * M1_dict[el_id]))
-            T_fin = sp.expand(pulisci_espr(T0_dict[el_id] + X1_exact * T1_dict[el_id]))
-            N_fin = sp.expand(pulisci_espr(N0_dict[el_id] + X1_exact * N1_dict[el_id]))
+            v = v + X1_exact * soluzione_S1.get(r['sym'], 0)
+        v_ex = pulisci_espr(sp.simplify(v))
+        soluzione_reale_plot[r['sym']] = float(sp.N(v_ex))
+        reaz_fin.append({'nodo': r['nodo'], 'tipo': r['tipo'], 'angle': r.get('angle', 0),
+                         'sup_idx': r.get('sup_idx'), 'pendolo': r.get('pendolo', False),
+                         'nome': _nome_reaz(r['tipo'], r['nodo'], r['sym'] if r['tipo'] == 'Fn' else None),
+                         'val': v_ex})
+    reazioni_reale_plot = list(reazioni_simboliche)
+    if grado_iperstaticita > 0 and tipo_svinc in nome_sym:
+        sym_x_nome = {'Fx': f'H_{nodo_svinc}', 'Fy': f'V_{nodo_svinc}', 'M': f'M_{nodo_svinc}'}.get(tipo_svinc) or str(sym_Fn.get(idx_X1_sup, 'X_1'))
+        sym_x_r = sp.Symbol(sym_x_nome)
+        soluzione_reale_plot[sym_x_r] = float(X1_exact)
+        reazioni_reale_plot.append({'nodo': nodo_svinc, 'tipo': tipo_svinc, 'sym': sym_x_r, 'angle': ang_X1,
+                                    'sup_idx': idx_X1_sup,
+                                    'pendolo': bool(tipo_svinc == 'Fn' and idx_X1_sup is not None and supports_n[idx_X1_sup].get('pendolo'))})
+        reaz_fin.append({'nodo': nodo_svinc, 'tipo': tipo_svinc, 'angle': ex(ang_X1),
+                         'sup_idx': idx_X1_sup,
+                         'pendolo': bool(tipo_svinc == 'Fn' and supports_n[idx_X1_sup].get('pendolo')),
+                         'nome': (_nome_reaz(tipo_svinc, nodo_svinc, sym_Fn.get(idx_X1_sup) if tipo_svinc == 'Fn' else None) + " (= X<sub>1</sub>)"),
+                         'val': X1_exact})
 
-            N_0 = float(sp.N(N_fin.subs(s_sym_8, 0))); N_L = float(sp.N(N_fin.subs(s_sym_8, L)))
-            T_0 = float(sp.N(T_fin.subs(s_sym_8, 0))); T_L = float(sp.N(T_fin.subs(s_sym_8, L)))
-            M_0 = float(sp.N(M_fin.subs(s_sym_8, 0))); M_L = float(sp.N(M_fin.subs(s_sym_8, L)))
+    for hp in hinge_pins:
+        for sk in (hp['sym_H'], hp['sym_V']):
+            v_hp = soluzione_S0.get(sk, 0) + (X1_exact * soluzione_S1.get(sk, 0) if grado_iperstaticita > 0 else 0)
+            soluzione_reale_plot[sk] = float(sp.N(v_hp))
 
-            # Punti stazionari dove T(s) = 0 strettamente interni all'asta
-            punti_staz_html = []
-            cT = _coeff_poly(T_fin, s_sym_8)
-            if cT is not None and len(np.trim_zeros(np.array(cT, dtype=float), 'f')) >= 2:
-                for s_star in sorted(_radici_in(cT, Lf)):
-                    if 1e-5 * Lf < s_star < Lf * (1 - 1e-5):
-                        M_star = float(sp.N(M_fin.subs(s_sym_8, s_star)))
-                        punti_staz_html.append(
-                            f"s<sup>*</sup> = {fmt_num(s_star, 2)} m (T = 0) &rArr; <b>M<sub>extr</sub> = {fmt_num(M_star, 2)} N&middot;m</b>"
-                        )
-            
-            report.append(f"<div style='background-color: #f8f9fa; padding: 12px; border: 1px solid #dee2e6; border-left: 4px solid #0d6efd; margin-bottom: 12px; border-radius: 4px;'>")
-            report.append(f"<h4 style='color: #0d6efd; margin: 0 0 8px 0;'>Asta {el_id} (Nodo {el['n1']} &rarr; Nodo {el['n2']}, L = {Lf:.2f} m)</h4>")
-            report.append("<table style='width: 100%; margin-bottom: 6px;'><tr>"
-                          "<th style='width: 16%;'>Grandezza</th>"
-                          "<th style='width: 28%; background-color:#e3f2fd; border-bottom: 2px solid #0d6efd;'>N(s) [N]</th>"
-                          "<th style='width: 28%; background-color:#e8f5e9; border-bottom: 2px solid #198754;'>T(s) [N]</th>"
-                          "<th style='width: 28%; background-color:#ffebee; border-bottom: 2px solid #dc3545;'>M(s) [N&middot;m]</th></tr>")
-            report.append(f"<tr><td><b>Espressione</b></td>"
-                          f"<td><span class='formula'>{pulisci_formula(N_fin, decimale=True)}</span></td>"
-                          f"<td><span class='formula'>{pulisci_formula(T_fin, decimale=True)}</span></td>"
-                          f"<td><span class='formula'>{pulisci_formula(M_fin, decimale=True)}</span></td></tr>")
-            report.append(f"<tr><td><b>Estremi</b><br><small>s = 0 / s = {Lf:.2f} m</small></td>"
-                          f"<td>{fmt_num(N_0, 2)} / {fmt_num(N_L, 2)}</td>"
-                          f"<td>{fmt_num(T_0, 2)} / {fmt_num(T_L, 2)}</td>"
-                          f"<td>{fmt_num(M_0, 2)} / {fmt_num(M_L, 2)}</td></tr></table>")
-            if punti_staz_html:
-                report.append(f"<p style='margin: 4px 0 0 0; font-size: 13px; color: #842029;'><b>Punto stazionario:</b> {'; '.join(punti_staz_html)}</p>")
-            report.append("</div>")
+    ha_carrello_incl = any(
+        rf['tipo'] == 'Fn' and not rf.get('pendolo')
+        and not (rf.get('sup_idx') is not None and supports_n[rf['sup_idx']].get('bipendolo'))
+        for rf in reaz_fin
+    )
+    ha_pendoli = any(s_.get('pendolo') or s_.get('bipendolo') for s_ in supports_n)
+    conv_parti = ["H positiva verso +x, V positiva verso +y, M positivo antiorario"]
+    if ha_carrello_incl:
+        conv_parti.append("R<sub>n</sub> positiva lungo la normale del carrello inclinato (angolo + 90&deg;)")
+    if ha_pendoli:
+        conv_parti.append("per pendoli e doppi pendoli inclinati R<sub>n</sub> &egrave; lungo l'asse delle bielle verso terra (R<sub>n</sub> &gt; 0 = trazione)")
+    report.append(f"<p>Convenzione: {'; '.join(conv_parti)}.</p>")
 
-        # ==========================================
-        # FASE 8-bis: REAZIONI FINALI, FORZE NELLE CERNIERE, VERIFICA DI EQUILIBRIO
-        # ==========================================
-        report.append("<h2>8-bis. Reazioni vincolari finali e forze nelle cerniere interne</h2>")
+    report.append("<h3>Reazioni vincolari definitive (esterne)</h3>")
+    report.append("<table><tr><th>Reazione</th><th>Nodo</th><th>Valore</th><th>Unit&agrave;</th></tr>")
+    for rf in reaz_fin:
+        unita = "N&middot;m" if rf['tipo'] == 'M' else "N"
+        report.append(f"<tr><td>{rf['nome']}</td><td>{rf['nodo']}</td><td><b>{fmt_num(float(rf['val']), 2)}</b></td><td>{unita}</td></tr>")
+    report.append("</table>")
 
-        # --- Reazioni finali: R = R0 + X1 * R1 (piu' la stessa X1, che e' la reazione del vincolo rimosso) ---
-        nome_sym = {'Fx': 'H', 'Fy': 'V', 'M': 'M', 'Fn': 'R'}
-        reaz_fin = []
-        def _nome_reaz(tipo_, nodo_, sym_=None):
-            parti_ = str(sym_).split('_') if sym_ is not None else []
-            if tipo_ == 'Fn':
-                suff = f"n{nodo_}.{parti_[2]}" if len(parti_) == 3 else f"n{nodo_}"
-                return f"R<sub>{suff}</sub>"
-            return f"{nome_sym[tipo_]}<sub>{nodo_}</sub>"
-        for r in reazioni_simboliche:
-            v = soluzione_S0.get(r['sym'], 0)
-            if grado_iperstaticita > 0:
-                v = v + X1_exact * soluzione_S1.get(r['sym'], 0)
-            reaz_fin.append({'nodo': r['nodo'], 'tipo': r['tipo'], 'angle': r.get('angle', 0),
-                             'sup_idx': r.get('sup_idx'), 'pendolo': r.get('pendolo', False),
-                             'nome': _nome_reaz(r['tipo'], r['nodo'], r['sym'] if r['tipo'] == 'Fn' else None),
-                             'val': pulisci_espr(sp.simplify(v))})
-        if grado_iperstaticita > 0 and tipo_svinc in nome_sym:
-            reaz_fin.append({'nodo': nodo_svinc, 'tipo': tipo_svinc, 'angle': ex(ang_X1),
-                             'sup_idx': idx_X1_sup,
-                             'pendolo': bool(tipo_svinc == 'Fn' and supports_n[idx_X1_sup].get('pendolo')),
-                             'nome': (_nome_reaz(tipo_svinc, nodo_svinc, sym_Fn.get(idx_X1_sup) if tipo_svinc == 'Fn' else None)
-                                      + " (= X<sub>1</sub>)"),
-                             'val': X1_exact})
+    # Verifica equilibrio globale + forze trasmesse nelle cerniere
+    def _componenti(rf):
+        if rf['tipo'] == 'Fx': return rf['val'], sp.Integer(0), sp.Integer(0)
+        if rf['tipo'] == 'Fy': return sp.Integer(0), rf['val'], sp.Integer(0)
+        if rf['tipo'] == 'M':  return sp.Integer(0), sp.Integer(0), rf['val']
+        c_, s_ = cs_ang(rf['angle'] + 90)
+        return rf['val'] * c_, rf['val'] * s_, sp.Integer(0)
 
-        ha_carrello_incl = any(
-            rf['tipo'] == 'Fn' and not rf.get('pendolo')
-            and not (rf.get('sup_idx') is not None and supports_n[rf['sup_idx']].get('bipendolo'))
-            for rf in reaz_fin
-        )
-        ha_pendoli = any(s_.get('pendolo') or s_.get('bipendolo') for s_ in supports_n)
-        conv_parti = ["H positiva verso +x, V positiva verso +y, M positivo antiorario"]
-        if ha_carrello_incl:
-            conv_parti.append("R<sub>n</sub> positiva lungo la normale del carrello inclinato (angolo + 90&deg;)")
-        if ha_pendoli:
-            conv_parti.append("per pendoli e doppi pendoli inclinati R<sub>n</sub> &egrave; lungo l'asse delle bielle verso terra (R<sub>n</sub> &gt; 0 = trazione)")
-        sovr_txt = " Valori ottenuti per sovrapposizione R = R<sub>0</sub> + X<sub>1</sub>&middot;R<sub>1</sub>." if grado_iperstaticita > 0 else ""
-        report.append(f"<p>Convenzione: {'; '.join(conv_parti)}.{sovr_txt}</p>")
-        report.append("<table><tr><th>Reazione</th><th>Nodo</th><th>Valore</th><th>Unit&agrave;</th></tr>")
-        for rf in reaz_fin:
-            unita = "N&middot;m" if rf['tipo'] == 'M' else "N"
-            report.append(f"<tr><td>{rf['nome']}</td><td>{rf['nodo']}</td><td><b>{fmt_num(float(rf['val']), 2)}</b></td><td>{unita}</td></tr>")
-        report.append("</table>")
+    res_x, res_y, res_m = Somma_Fx_ext, Somma_Fy_ext, Somma_M_ext
+    for rf in reaz_fin:
+        fx_, fy_, m_ = _componenti(rf)
+        xn_, yn_ = nodi[rf['nodo']]
+        res_x += fx_; res_y += fy_; res_m += m_ + fy_ * (xn_ - xp) - fx_ * (yn_ - yp)
+    residui = [float(sp.N(res_x)), float(sp.N(res_y)), float(sp.N(res_m))]
+    equilibrio_ok = all(abs(v) < 1e-6 for v in residui)
 
-        # --- Verifica di equilibrio globale con le reazioni finali ---
-        def _componenti(rf):
-            if rf['tipo'] == 'Fx': return rf['val'], sp.Integer(0), sp.Integer(0)
-            if rf['tipo'] == 'Fy': return sp.Integer(0), rf['val'], sp.Integer(0)
-            if rf['tipo'] == 'M':  return sp.Integer(0), sp.Integer(0), rf['val']
-            c_, s_ = cs_ang(rf['angle'] + 90)
-            return rf['val'] * c_, rf['val'] * s_, sp.Integer(0)
-
-        res_x, res_y, res_m = Somma_Fx_ext, Somma_Fy_ext, Somma_M_ext
-        for rf in reaz_fin:
-            fx_, fy_, m_ = _componenti(rf)
-            xn_, yn_ = nodi[rf['nodo']]
-            res_x += fx_
-            res_y += fy_
-            res_m += m_ + fy_ * (xn_ - xp) - fx_ * (yn_ - yp)
-        residui = [float(sp.N(res_x)), float(sp.N(res_y)), float(sp.N(res_m))]
-        equilibrio_ok = all(abs(v) < 1e-6 for v in residui)
-
-        # --- Forze trasmesse dalle cerniere interne ---
-        righe_cern = []
-        cerniere_ok = True
-        for ci in cerniere_info:
-          nc = ci['nodo']
-          xc, yc = nodi[nc]
-          for id_asta_ramo, ramo_c in ci['rami']:
+    righe_cern = []
+    cerniere_ok = True
+    for ci in cerniere_info:
+        nc = ci['nodo']; xc, yc = nodi[nc]
+        for id_asta_ramo, ramo_c in ci['rami']:
             Fx_b, Fy_b, M_hinge = sp.Integer(0), sp.Integer(0), sp.Integer(0)
             nodi_corpo = set(ramo_c) | ({nc} if ci['attach'] is not None and ci['attach'] == id_asta_ramo else set())
             for nid_ in nodi_corpo:
@@ -2625,8 +2974,7 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
                 fx_n = f0['Fx'] + X1_exact * f1['Fx']
                 fy_n = f0['Fy'] + X1_exact * f1['Fy']
                 m_n = f0['M'] + X1_exact * f1['M']
-                Fx_b += fx_n
-                Fy_b += fy_n
+                Fx_b += fx_n; Fy_b += fy_n
                 M_hinge += m_n + fy_n * (nodi[nid_][0] - xc) - fx_n * (nodi[nid_][1] - yc)
             for el_load in dati_json.get('element_loads', []):
                 c_ = _carico(el_load)
@@ -2634,223 +2982,181 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
                 a_, b_ = int(c_[0]['n1']), int(c_[0]['n2'])
                 if (a_ in ramo_c or a_ == nc) and (b_ in ramo_c or b_ == nc) and not (a_ == nc and b_ == nc):
                     fxq, fyq, xq, yq = _risultante(c_)
-                    Fx_b += fxq
-                    Fy_b += fyq
+                    Fx_b += fxq; Fy_b += fyq
                     M_hinge += fyq * (xq - xc) - fxq * (yq - yc)
             Hx, Hy = pulisci_espr(sp.simplify(-Fx_b)), pulisci_espr(sp.simplify(-Fy_b))
             m_res = float(sp.N(M_hinge))
             if abs(m_res) > 1e-6: cerniere_ok = False
             righe_cern.append(
                 f"<tr><td>{nc}</td><td>Ramo di Asta {id_asta_ramo} (nodi {', '.join(str(n_) for n_ in sorted(ramo_c))})</td>"
-                f"<td><b>{fmt_num(float(Hx), 2)}</b></td><td><b>{fmt_num(float(Hy), 2)}</b></td><td>{fmt_num(m_res, 2)}</td></tr>")
+                f"<td><b>{fmt_num(float(Hx), 2)}</b></td><td><b>{fmt_num(float(Hy), 2)}</b></td><td>{fmt_num(m_res, 2)}</td></tr>"
+            )
+    if righe_cern:
+        report.append("<h3>Forze interne definitive nelle cerniere</h3>")
+        report.append("<table><tr><th>Nodo cerniera</th><th>Ramo</th><th>H [N]</th><th>V [N]</th><th>M in cerniera [N&middot;m]</th></tr>")
+        report.extend(righe_cern)
+        report.append("</table>")
 
-        if righe_cern:
-            report.append("<h3>Forze trasmesse dalle cerniere interne</h3>")
-            report.append("<p>Forza (H, V) che il resto della struttura esercita, attraverso la cerniera, sul ramo indicato "
-                          "(sull'altro lato agisce la forza opposta). Il momento in cerniera deve risultare nullo.</p>")
-            report.append("<table><tr><th>Nodo cerniera</th><th>Ramo</th><th>H [N]</th><th>V [N]</th><th>M in cerniera [N&middot;m]</th></tr>")
-            report.extend(righe_cern)
-            report.append("</table>")
+    # Espressioni analitiche definitive N(s), T(s), M(s)
+    report.append("<h3>Caratteristiche definitive della sollecitazione per tratto</h3>")
+    s_sym_8 = sp.Symbol("s")
+    M_fin_all, T_fin_all, N_fin_all = {}, {}, {}
+    for el in elementi:
+        el_id = el['id']
+        L = hyp(nodi[int(el['n2'])][0] - nodi[int(el['n1'])][0], nodi[int(el['n2'])][1] - nodi[int(el['n1'])][1])
+        Lf = float(L)
+        M_fin = sp.expand(pulisci_espr(M0_dict[el_id] + X1_exact * M1_dict[el_id]))
+        T_fin = sp.expand(pulisci_espr(T0_dict[el_id] + X1_exact * T1_dict[el_id]))
+        N_fin = sp.expand(pulisci_espr(N0_dict[el_id] + X1_exact * N1_dict[el_id]))
+        M_fin_all[el_id] = M_fin; T_fin_all[el_id] = T_fin; N_fin_all[el_id] = N_fin
 
-        if equilibrio_ok and cerniere_ok:
-            print(f"[VERIFICA EQUILIBRIO GLOBALE] OK: residui Fx={residui[0]:.2e}, Fy={residui[1]:.2e}, M={residui[2]:.2e}")
-        else:
-            report.append("<div style='background-color:#f8d7da; color:#842029; padding:10px; border-left:4px solid #dc3545; margin-bottom:15px;'>"
-                          f"&#10008; Verifica di equilibrio NON soddisfatta: residui &Sigma;F<sub>x</sub> = {fmt_sci_html(residui[0])}, "
-                          f"&Sigma;F<sub>y</sub> = {fmt_sci_html(residui[1])}, &Sigma;M = {fmt_sci_html(residui[2])}"
-                          + ("; momento non nullo in almeno una cerniera." if not cerniere_ok else ".")
-                          + " I risultati vanno considerati inaffidabili.</div>")
+        N_0 = float(sp.N(N_fin.subs(s_sym_8, 0))); N_L = float(sp.N(N_fin.subs(s_sym_8, L)))
+        T_0 = float(sp.N(T_fin.subs(s_sym_8, 0))); T_L = float(sp.N(T_fin.subs(s_sym_8, L)))
+        M_0 = float(sp.N(M_fin.subs(s_sym_8, 0))); M_L = float(sp.N(M_fin.subs(s_sym_8, L)))
 
-        ULTIMI_RISULTATI['reazioni'] = [(rf['tipo'], rf['nodo'], float(rf['val'])) for rf in reaz_fin]
-        ULTIMI_RISULTATI['X1'] = float(X1_exact)
-        ULTIMI_RISULTATI['equilibrio_globale'] = max(abs(v) for v in residui)
+        punti_staz_html = []
+        cT = _coeff_poly(T_fin, s_sym_8)
+        if cT is not None and len(np.trim_zeros(np.array(cT, dtype=float), 'f')) >= 2:
+            for s_star in sorted(_radici_in(cT, Lf)):
+                if 1e-5 * Lf < s_star < Lf * (1 - 1e-5):
+                    M_star = float(sp.N(M_fin.subs(s_sym_8, s_star)))
+                    punti_staz_html.append(f"s<sup>*</sup> = {fmt_num(s_star, 2)} m (T = 0) &rArr; <b>M<sub>extr</sub> = {fmt_num(M_star, 2)} N&middot;m</b>")
 
-        # ==========================================
-        # FASE 8-ter: PENDOLI (BIELLE INCLINATE) - TIRANTE O PUNTONE E DIMENSIONAMENTO DELLA SEZIONE
-        # ==========================================
-        pendoli = [rf for rf in reaz_fin if rf['tipo'] == 'Fn' and rf.get('pendolo')]
-        ULTIMI_RISULTATI['pendoli'] = []
-        if pendoli:
-            sigma_amm_p = float(dati_json.get('material', {}).get('sigma_amm', 235e6))
-            MS_op_p = dati_json.get('material', {}).get('MS_design_operator', dati_json.get('material', {}).get('MS_operator', '>='))
-            MS_t_p = float(dati_json.get('material', {}).get('MS_design_target', dati_json.get('material', {}).get('MS_target', 0.0)))
-            op_p, _sig_op_p = _simboli_op(MS_op_p)
-            ps = dati_json.get('pendolo_section') or {}
-            forma = str(ps.get('shape', 'area'))
-            modo_p = str(ps.get('mode', 'design'))
-            k_rett = float(ps.get('ratio', 1) or 1)
-            report.append("<h2>8-ter. Pendoli (bielle): tirante o puntone e sezione</h2>")
-            report.append("<p>Il pendolo &egrave; una biella cerniera-cerniera: trasmette solo una forza assiale N lungo il suo asse "
-                          "(deformabilit&agrave; assiale trascurata, quindi &egrave; un vincolo rigido). "
-                          "N = R<sub>n</sub> &egrave; positiva se la biella <b>tira</b> la struttura verso il vincolo a terra "
-                          "(<b>tirante</b>, trazione); N negativa = la biella <b>spinge</b> (<b>puntone</b>, compressione).</p>")
-            if sigma_t_ok := (1 + MS_t_p > 1e-9):
-                sigma_t_p = sigma_amm_p / (1 + MS_t_p)
+        report.append(f"<div style='background-color: #f8f9fa; padding: 10px 12px; border: 1px solid #dee2e6; border-left: 4px solid #0d6efd; margin-bottom: 10px; border-radius: 4px; page-break-inside: avoid;'>")
+        report.append(f"<h4 style='color: #0d6efd; margin: 0 0 6px 0;'>Asta {el_id} (Nodo {el['n1']} &rarr; Nodo {el['n2']}, L = {Lf:.2f} m)</h4>")
+        report.append("<table style='width: 100%; margin-bottom: 4px;'><tr>"
+                      "<th style='width: 16%;'>Grandezza</th>"
+                      "<th style='width: 28%; background-color:#e3f2fd;'>N(s) [N]</th>"
+                      "<th style='width: 28%; background-color:#e8f5e9;'>T(s) [N]</th>"
+                      "<th style='width: 28%; background-color:#ffebee;'>M(s) [N&middot;m]</th></tr>")
+        report.append(f"<tr><td><b>Espressione</b></td>"
+                      f"<td><span class='formula'>{pulisci_formula(N_fin, decimale=True)}</span></td>"
+                      f"<td><span class='formula'>{pulisci_formula(T_fin, decimale=True)}</span></td>"
+                      f"<td><span class='formula'>{pulisci_formula(M_fin, decimale=True)}</span></td></tr>")
+        report.append(f"<tr><td><b>Estremi</b> <small>(s=0 / s={Lf:.2f})</small></td>"
+                      f"<td>{fmt_num(N_0, 2)} / {fmt_num(N_L, 2)}</td>"
+                      f"<td>{fmt_num(T_0, 2)} / {fmt_num(T_L, 2)}</td>"
+                      f"<td>{fmt_num(M_0, 2)} / {fmt_num(M_L, 2)}</td></tr></table>")
+        if punti_staz_html:
+            report.append(f"<p style='margin: 4px 0 0 0; font-size: 13px; color: #842029;'><b>Punto stazionario:</b> {'; '.join(punti_staz_html)}</p>")
+        report.append("</div>")
+
+    # Schema globale Reale — riferimenti monoassiali + I 3 diagrammi finali non spezzati tra pagine
+    img_reale_mono = plot_sistema_S0(
+        nodi, elementi, reazioni_reale_plot, soluzione_reale_plot,
+        "reale_monoassiali.png", out_dir, "monoassiali", con_unita=True, cerniere_plot=cerniere_plot
+    )
+    report.append(_img_block_html("<h4 style='margin:0;'>Reale &mdash; riferimenti monoassiali</h4>", img_reale_mono, 500))
+
+    img_fin_diag = _salva_trio_diagrammi(
+        nodi_f, elementi, M_fin_all, T_fin_all, N_fin_all,
+        "Momento flettente M — reale [N·m] (lato fibre tese)",
+        "Taglio T — reale [N]",
+        "Sforzo normale N — reale [N]",
+        percorso_diag, out_dir
+    )
+    report.append(_img_block_html(
+        "<h3 style='margin:0;'>Diagrammi finali delle sollecitazioni (Sistema Reale)</h3>",
+        img_fin_diag, 560, page_break_before=True
+    ))
+
+    if equilibrio_ok and cerniere_ok:
+        print(f"[VERIFICA EQUILIBRIO GLOBALE] OK: residui Fx={residui[0]:.2e}, Fy={residui[1]:.2e}, M={residui[2]:.2e}")
+    else:
+        report.append("<div style='background-color:#f8d7da; color:#842029; padding:10px; border-left:4px solid #dc3545; margin-bottom:15px;'>"
+                      f"&#10008; Verifica di equilibrio NON soddisfatta: residui &Sigma;F<sub>x</sub> = {fmt_sci_html(residui[0])}, "
+                      f"&Sigma;F<sub>y</sub> = {fmt_sci_html(residui[1])}, &Sigma;M = {fmt_sci_html(residui[2])}.</div>")
+
+    ULTIMI_RISULTATI['reazioni'] = [(rf['tipo'], rf['nodo'], float(rf['val'])) for rf in reaz_fin]
+    ULTIMI_RISULTATI['X1'] = float(X1_exact)
+    ULTIMI_RISULTATI['equilibrio_globale'] = max(abs(v) for v in residui)
+
+    # Controllo coerenza nodale silenzioso (console + UI)
+    Lmap = {e_['id']: hyp(nodi[int(e_['n2'])][0] - nodi[int(e_['n1'])][0], nodi[int(e_['n2'])][1] - nodi[int(e_['n1'])][1]) for e_ in elementi}
+    hinged_per_nodo = {}
+    for c_ in cerniere_interne:
+        nc_ = int(c_['node_id'])
+        inc_ = [e_ for e_ in elementi if nc_ in (int(e_['n1']), int(e_['n2']))]
+        hs_ = {int(x_) for x_ in c_['elems']} if c_.get('elems') else ({int(inc_[0]['id'])} if inc_ else set())
+        hinged_per_nodo.setdefault(nc_, set()).update(hs_)
+    forze_barra = {n_: [0.0, 0.0] for n_ in nodi}
+    mom_rigidi = {n_: 0.0 for n_ in nodi}
+    mom_cerniera = []
+    for el in elementi:
+        eid_ = el['id']; n1_, n2_ = int(el['n1']), int(el['n2']); Lf_ = float(Lmap[eid_])
+        if Lf_ == 0: continue
+        sv_ = np.array([0.0, Lf_])
+        Mv_, Tv_, Nv_ = _valuta_poly(M_fin_all[eid_], sv_), _valuta_poly(T_fin_all[eid_], sv_), _valuta_poly(N_fin_all[eid_], sv_)
+        ca_ = float((nodi[n2_][0] - nodi[n1_][0]) / Lmap[eid_]); sa_ = float((nodi[n2_][1] - nodi[n1_][1]) / Lmap[eid_])
+        ux_, uy_, nx_, ny_ = ca_, sa_, -sa_, ca_
+        forze_barra[n1_][0] += Nv_[0] * ux_ - Tv_[0] * nx_; forze_barra[n1_][1] += Nv_[0] * uy_ - Tv_[0] * ny_
+        forze_barra[n2_][0] += -Nv_[1] * ux_ + Tv_[1] * nx_; forze_barra[n2_][1] += -Nv_[1] * uy_ + Tv_[1] * ny_
+        for nodo_e, m_e in ((n1_, -Mv_[0]), (n2_, Mv_[1])):
+            if int(eid_) in hinged_per_nodo.get(nodo_e, set()):
+                mom_cerniera.append((nodo_e, eid_, float(m_e)))
             else:
-                sigma_t_p = float('nan')
-            report.append("<table><tr><th>Pendolo</th><th>Nodo</th><th>Asse (da +x, verso terra)</th><th>N [N]</th><th>Funzionamento</th></tr>")
-            righe_sez = []
-            for rf in pendoli:
-                sup_p = supports_n[rf['sup_idx']] if rf.get('sup_idx') is not None else {}
-                ang_ax = float(sup_p.get('axis_angle', float(rf['angle']) + 90))
-                Np = float(rf['val'])
-                if abs(Np) < 1e-6:
-                    funz, col = "scarico (N = 0)", "#6c757d"
-                elif Np > 0:
-                    funz, col = "TIRANTE (trazione)", "#0d6efd"
-                else:
-                    funz, col = "PUNTONE (compressione)", "#dc3545"
-                report.append(f"<tr><td>{rf['nome']}</td><td>{rf['nodo']}</td><td>{ang_ax:.2f}&deg;</td>"
-                              f"<td><b>{fmt_num(Np, 2)}</b></td><td style='color:{col}; font-weight:bold;'>{funz}</td></tr>")
-                info_p = {'nodo': rf['nodo'], 'N': Np, 'funzionamento': funz.split()[0].lower(), 'asse_deg': ang_ax}
+                mom_rigidi[nodo_e] += float(m_e)
+    scala_f = max([1.0] + [abs(float(v_)) for n_ in nodi for v_ in (Forze_S0[n_]['Fx'], Forze_S0[n_]['Fy'])])
+    scala_m = max([1.0] + [abs(float(Forze_S0[n_]['M'])) for n_ in nodi] + [scala_f * float(max(Lmap.values()))])
+    res_nodi, mt_nodo = [], {}
+    carrier_nodo = {ci_['nodo']: ci_['carrier'] for ci_ in cerniere_info}
+    for n_ in nodi:
+        ft_x = float(sp.N(Forze_S0[n_]['Fx'] + X1_exact * Forze_S1[n_]['Fx']))
+        ft_y = float(sp.N(Forze_S0[n_]['Fy'] + X1_exact * Forze_S1[n_]['Fy']))
+        mt_ = float(sp.N(Forze_S0[n_]['M'] + X1_exact * Forze_S1[n_]['M']))
+        mt_nodo[n_] = mt_
+        rx_, ry_ = forze_barra[n_][0] + ft_x, forze_barra[n_][1] + ft_y
+        car_ = carrier_nodo.get(n_)
+        rm_ = mom_rigidi[n_] if car_ is not None else mom_rigidi[n_] + mt_
+        res_nodi.append((n_, rx_, ry_, rm_))
+    res_cern = [(n_, e_, m_ + (mt_nodo[n_] if carrier_nodo.get(n_) is not None and int(e_) == int(carrier_nodo[n_]) else 0.0)) for n_, e_, m_ in mom_cerniera]
+    max_res_f = max([abs(r_[1]) for r_ in res_nodi] + [abs(r_[2]) for r_ in res_nodi] + [0.0])
+    max_res_m = max([abs(r_[3]) for r_ in res_nodi] + [abs(c_[2]) for c_ in res_cern] + [0.0])
+    nodi_ko = [r_[0] for r_ in res_nodi if max(abs(r_[1]), abs(r_[2])) > 1e-6 * scala_f or abs(r_[3]) > 1e-6 * scala_m]
+    cern_ko = [(c_[0], c_[1]) for c_ in res_cern if abs(c_[2]) > 1e-6 * scala_m]
+    ULTIMI_RISULTATI['equilibrio_nodi'] = (max_res_f, max_res_m)
+    ULTIMI_RISULTATI['nodi_non_in_equilibrio'] = nodi_ko + [c_[0] for c_ in cern_ko]
+    if not nodi_ko and not cern_ko:
+        print(f"[VERIFICA EQUILIBRIO NODI] OK: residuo max forze={max_res_f:.2e} N, momenti={max_res_m:.2e} N*m")
+    else:
+        report.append("<div style='background-color:#f8d7da; color:#842029; padding:10px; border-left:4px solid #dc3545; margin-bottom:15px;'>"
+                      f"&#10008; Equilibrio ai nodi NON soddisfatto: residuo max forze = {fmt_sci_html(max_res_f)} N, momenti = {fmt_sci_html(max_res_m)} N&middot;m.</div>")
 
-                blocco_sez = [f"<h4>{rf['nome']} (nodo {rf['nodo']}): {funz}</h4>"]
-                L_pend = None
-                if sup_p.get('pend_dx') is not None and sup_p.get('pend_dy') is not None:
-                    L_pend = math.hypot(float(sup_p['pend_dx']), float(sup_p['pend_dy']))
-                    blocco_sez.append(f"<p>Lunghezza del pendolo: L = {L_pend:.2f} m.</p>")
-                if modo_p == 'verifica':
-                    if forma == 'rettangolare':
-                        A_p = float(ps.get('b', 0)) * float(ps.get('h', 0)); desc = f"b = {float(ps.get('b',0))} m, h = {float(ps.get('h',0))} m"
-                    elif forma == 'circolare':
-                        A_p = math.pi * float(ps.get('d', 0)) ** 2 / 4; desc = f"d = {float(ps.get('d',0))} m"
-                    else:
-                        A_p = float(ps.get('A', 0)); desc = ""
-                    if A_p <= 0:
-                        blocco_sez.append(_box_errore("Sezione del pendolo mancante", "Per la verifica indica le dimensioni (A, oppure b e h, oppure d) della sezione del pendolo."))
-                    else:
-                        sig_p = abs(Np) / A_p
-                        MS_p = (sigma_amm_p / sig_p - 1) if sig_p > 0 else float('inf')
-                        ok_p = _verifica_op(MS_p, MS_op_p, MS_t_p)
-                        blocco_sez.append(f"<p>Sezione assegnata {desc}: A = {fmt_sci_html(A_p)} m&sup2;. "
-                                          f"&sigma; = |N|/A = {fmt_num(abs(Np), 2)} / ({fmt_sci_html(A_p)}) = <b>{sig_p/1e6:.2f} MPa</b>; "
-                                          f"MS = &sigma;<sub>lim</sub>/&sigma; &minus; 1 = <b>{MS_p:.2f}</b> (richiesto {op_p} {MS_t_p:g}) &rarr; "
-                                          + ("<b style='color:#198754;'>verifica soddisfatta &#10004;</b>" if ok_p else "<b style='color:#dc3545;'>verifica NON soddisfatta &#10008;</b>") + "</p>")
-                        info_p.update({'A': A_p, 'sigma': sig_p, 'MS': MS_p, 'ok': ok_p})
-                else:
-                    if not sigma_t_ok:
-                        blocco_sez.append(_box_errore("Dimensionamento impossibile", "Con MS richiesto &le; &minus;1 la tensione obiettivo non &egrave; definita."))
-                    elif abs(Np) < 1e-6:
-                        blocco_sez.append("<p>Forza nulla: &sigma; = 0 per qualsiasi sezione, nessun limite sull'area.</p>")
-                    else:
-                        A_req = abs(Np) / sigma_t_p
-                        blocco_sez.append(f"<p>MS {op_p} {MS_t_p:g} &rArr; &sigma; = |N|/A {_sig_op_p} &sigma;<sub>amm</sub>/(1+MS) = {sigma_amm_p/1e6:.2f}/{1 + MS_t_p:g} = {sigma_t_p/1e6:.2f} MPa "
-                                          f"&rArr; <b>A {op_p} |N|&middot;(1+MS)/&sigma;<sub>amm</sub> = {fmt_sci_html(A_req)} m&sup2; = {A_req*1e4:.2f} cm&sup2;</b></p>")
-                        dim_txt = ""
-                        if forma == 'rettangolare':
-                            b_p = math.sqrt(A_req / k_rett)
-                            dim_txt = f"Sezione rettangolare con h/b = {k_rett:g}: <b>b {op_p} {b_p*100:.2f} cm, h = {k_rett:g}&middot;b {op_p} {k_rett*b_p*100:.2f} cm</b>"
-                            info_p.update({'b': b_p, 'h': k_rett * b_p})
-                        elif forma == 'circolare':
-                            d_p = math.sqrt(4 * A_req / math.pi)
-                            dim_txt = f"Sezione circolare piena: <b>d {op_p} {d_p*100:.2f} cm</b>"
-                            info_p['d'] = d_p
-                        if dim_txt: blocco_sez.append(f"<p>{dim_txt}</p>")
-                        info_p['A_req'] = A_req
-                if Np < -1e-6:
-                    E_p = float(dati_json.get('material', {}).get('E', 2.1e11))
-                    I_p = None
-                    if modo_p == 'verifica':
-                        if forma == 'rettangolare':
-                            bb_, hh_ = float(ps.get('b', 0)), float(ps.get('h', 0))
-                            I_p = max(bb_, hh_) * min(bb_, hh_) ** 3 / 12.0
-                        elif forma == 'circolare':
-                            I_p = math.pi * float(ps.get('d', 0)) ** 4 / 64.0
-                    else:
-                        if info_p.get('b') is not None:
-                            I_p = max(info_p['b'], info_p['h']) * min(info_p['b'], info_p['h']) ** 3 / 12.0
-                        elif info_p.get('d') is not None:
-                            I_p = math.pi * info_p['d'] ** 4 / 64.0
-                    if L_pend is None or L_pend <= 0:
-                        blocco_sez.append("<p><small>Stabilit&agrave; del puntone: lunghezza del pendolo non nota (mancano pend_dx, pend_dy), carico critico non calcolato.</small></p>")
-                    elif I_p is None or I_p <= 0:
-                        I_req = abs(Np) * L_pend ** 2 / (math.pi ** 2 * E_p)
-                        blocco_sez.append(f"<p>Stabilit&agrave; del puntone (Eulero, cerniera-cerniera): per P<sub>cr</sub> = &pi;&sup2;EI/L&sup2; &ge; |N| serve "
-                                          f"<b>I<sub>min</sub> &ge; |N|L&sup2;/(&pi;&sup2;E) = {fmt_sci_html(I_req)} m<sup>4</sup></b> "
-                                          "(forma della sezione non assegnata: non si pu&ograve; calcolare P<sub>cr</sub>).</p>")
-                        info_p['I_min_richiesto'] = I_req
-                    else:
-                        P_cr = math.pi ** 2 * E_p * I_p / L_pend ** 2
-                        lam = P_cr / abs(Np)
-                        ok_e = P_cr >= abs(Np)
-                        blocco_sez.append(f"<p>Stabilit&agrave; del puntone (Eulero, cerniera-cerniera, L = {L_pend:.2f} m): I<sub>min</sub> = {fmt_sci_html(I_p)} m<sup>4</sup>, "
-                                          f"P<sub>cr</sub> = &pi;&sup2;EI<sub>min</sub>/L&sup2; = <b>{fmt_num(P_cr, 2)} N</b>; P<sub>cr</sub>/|N| = <b>{lam:.2f}</b> &rarr; "
-                                          + ("<b style='color:#198754;'>stabile &#10004;</b>" if ok_e else "<b style='color:#dc3545;'>INSTABILE (P<sub>cr</sub> &lt; |N|) &#10008;</b>") + "</p>")
-                        info_p.update({'P_cr': P_cr, 'lambda_euler': lam, 'stabile': ok_e, 'I_min': I_p, 'L': L_pend})
-                righe_sez.append("".join(blocco_sez))
-                ULTIMI_RISULTATI['pendoli'].append(info_p)
-            report.append("</table>")
-            report.extend(righe_sez)
-            if any(i_['funzionamento'] == 'puntone' for i_ in ULTIMI_RISULTATI['pendoli']):
-                report.append("<p><small>Per il puntone &egrave; riportata anche la verifica di stabilit&agrave; (carico critico euleriano, cerniera-cerniera): "
-                              "&egrave; indicativa, la prova potrebbe richiedere solo la verifica a compressione semplice.</small></p>")
+    pendoli = [rf for rf in reaz_fin if rf['tipo'] == 'Fn' and rf.get('pendolo')]
+    ULTIMI_RISULTATI['pendoli'] = []
+    if pendoli:
+        sigma_amm_p = float(dati_json.get('material', {}).get('sigma_amm', 235e6))
+        MS_op_p = dati_json.get('material', {}).get('MS_design_operator', dati_json.get('material', {}).get('MS_operator', '>='))
+        MS_t_p = float(dati_json.get('material', {}).get('MS_design_target', dati_json.get('material', {}).get('MS_target', 0.0)))
+        op_p, _sig_op_p = _simboli_op(MS_op_p)
+        ps = dati_json.get('pendolo_section') or {}
+        forma = str(ps.get('shape', 'area')); modo_p = str(ps.get('mode', 'design')); k_rett = float(ps.get('ratio', 1) or 1)
+        sigma_t_p = (sigma_amm_p / (1 + MS_t_p)) if (1 + MS_t_p > 1e-9) else float('nan')
+        report.append("<h3>Pendoli (bielle): tirante o puntone e sezione</h3>")
+        report.append("<table><tr><th>Pendolo</th><th>Nodo</th><th>Asse</th><th>N [N]</th><th>Funzionamento</th></tr>")
+        righe_sez = []
+        for rf in pendoli:
+            sup_p = supports_n[rf['sup_idx']] if rf.get('sup_idx') is not None else {}
+            ang_ax = float(sup_p.get('axis_angle', float(rf['angle']) + 90))
+            Np = float(rf['val'])
+            funz, col = ("scarico (N = 0)", "#6c757d") if abs(Np) < 1e-6 else (("TIRANTE (trazione)", "#0d6efd") if Np > 0 else ("PUNTONE (compressione)", "#dc3545"))
+            report.append(f"<tr><td>{rf['nome']}</td><td>{rf['nodo']}</td><td>{ang_ax:.2f}&deg;</td><td><b>{fmt_num(Np, 2)}</b></td><td style='color:{col}; font-weight:bold;'>{funz}</td></tr>")
+            info_p = {'nodo': rf['nodo'], 'N': Np, 'funzionamento': funz.split()[0].lower(), 'asse_deg': ang_ax}
+            if modo_p == 'verifica':
+                A_p = float(ps.get('b',0))*float(ps.get('h',0)) if forma=='rettangolare' else (math.pi*float(ps.get('d',0))**2/4 if forma=='circolare' else float(ps.get('A',0)))
+                if A_p > 0:
+                    sig_p = abs(Np) / A_p; MS_p = (sigma_amm_p / sig_p - 1) if sig_p > 0 else float('inf')
+                    info_p.update({'A': A_p, 'sigma': sig_p, 'MS': MS_p, 'ok': _verifica_op(MS_p, MS_op_p, MS_t_p)})
+            elif abs(Np) >= 1e-6 and sigma_t_p == sigma_t_p:
+                A_req = abs(Np) / sigma_t_p; info_p['A_req'] = A_req
+                if forma == 'rettangolare': info_p.update({'b': math.sqrt(A_req/k_rett), 'h': k_rett*math.sqrt(A_req/k_rett)})
+                elif forma == 'circolare': info_p['d'] = math.sqrt(4*A_req/math.pi)
+                righe_sez.append(f"<p><b>{rf['nome']} (nodo {rf['nodo']}):</b> {funz} &mdash; A {op_p} {fmt_sci_html(A_req)} m&sup2; ({A_req*1e4:.2f} cm&sup2;)</p>")
+            ULTIMI_RISULTATI['pendoli'].append(info_p)
+        report.append("</table>"); report.extend(righe_sez)
 
-        # ==========================================
-        # FASE 8-quater: COERENZA M, T, N FINALI - EQUILIBRIO DI OGNI NODO
-        # ==========================================
-        s_nodo = sp.Symbol("s")
-        Lmap = {e_['id']: hyp(nodi[int(e_['n2'])][0] - nodi[int(e_['n1'])][0], nodi[int(e_['n2'])][1] - nodi[int(e_['n1'])][1]) for e_ in elementi}
-        hinged_per_nodo = {}
-        for c_ in cerniere_interne:
-            nc_ = int(c_['node_id'])
-            inc_ = [e_ for e_ in elementi if nc_ in (int(e_['n1']), int(e_['n2']))]
-            hs_ = {int(x_) for x_ in c_['elems']} if c_.get('elems') else ({int(inc_[0]['id'])} if inc_ else set())
-            hinged_per_nodo.setdefault(nc_, set()).update(hs_)
-        forze_barra = {n_: [0.0, 0.0] for n_ in nodi}
-        mom_rigidi = {n_: 0.0 for n_ in nodi}
-        mom_cerniera = []
-        for el in elementi:
-            eid_ = el['id']
-            n1_, n2_ = int(el['n1']), int(el['n2'])
-            Lf_ = float(Lmap[eid_])
-            if Lf_ == 0: continue
-            if grado_iperstaticita > 0:
-                Mf_ = M0_dict[eid_] + X1_exact * M1_dict[eid_]; Tf_ = T0_dict[eid_] + X1_exact * T1_dict[eid_]; Nf_ = N0_dict[eid_] + X1_exact * N1_dict[eid_]
-            else:
-                Mf_, Tf_, Nf_ = M0_dict[eid_], T0_dict[eid_], N0_dict[eid_]
-            sv_ = np.array([0.0, Lf_])
-            Mv_, Tv_, Nv_ = _valuta_poly(Mf_, sv_), _valuta_poly(Tf_, sv_), _valuta_poly(Nf_, sv_)
-            ca_ = float((nodi[n2_][0] - nodi[n1_][0]) / Lmap[eid_]); sa_ = float((nodi[n2_][1] - nodi[n1_][1]) / Lmap[eid_])
-            ux_, uy_, nx_, ny_ = ca_, sa_, -sa_, ca_
-            forze_barra[n1_][0] += Nv_[0] * ux_ - Tv_[0] * nx_
-            forze_barra[n1_][1] += Nv_[0] * uy_ - Tv_[0] * ny_
-            forze_barra[n2_][0] += -Nv_[1] * ux_ + Tv_[1] * nx_
-            forze_barra[n2_][1] += -Nv_[1] * uy_ + Tv_[1] * ny_
-            for nodo_e, m_e in ((n1_, -Mv_[0]), (n2_, Mv_[1])):
-                if int(eid_) in hinged_per_nodo.get(nodo_e, set()):
-                    mom_cerniera.append((nodo_e, eid_, float(m_e)))
-                else:
-                    mom_rigidi[nodo_e] += float(m_e)
-        scala_f = max([1.0] + [abs(float(v_)) for n_ in nodi for v_ in (Forze_S0[n_]['Fx'], Forze_S0[n_]['Fy'])])
-        scala_m = max([1.0] + [abs(float(Forze_S0[n_]['M'])) for n_ in nodi] + [scala_f * float(max(Lmap.values()))])
-        res_nodi = []
-        mt_nodo = {}
-        carrier_nodo = {ci_['nodo']: ci_['carrier'] for ci_ in cerniere_info}
-        for n_ in nodi:
-            ft_x = float(sp.N(Forze_S0[n_]['Fx'] + X1_exact * Forze_S1[n_]['Fx']))
-            ft_y = float(sp.N(Forze_S0[n_]['Fy'] + X1_exact * Forze_S1[n_]['Fy']))
-            mt_ = float(sp.N(Forze_S0[n_]['M'] + X1_exact * Forze_S1[n_]['M']))
-            mt_nodo[n_] = mt_
-            rx_, ry_ = forze_barra[n_][0] + ft_x, forze_barra[n_][1] + ft_y
-            car_ = carrier_nodo.get(n_)
-            rm_ = mom_rigidi[n_] if car_ is not None else mom_rigidi[n_] + mt_
-            res_nodi.append((n_, rx_, ry_, rm_))
-        res_cern = [(n_, e_, m_ + (mt_nodo[n_] if carrier_nodo.get(n_) is not None and int(e_) == int(carrier_nodo[n_]) else 0.0))
-                    for n_, e_, m_ in mom_cerniera]
-        max_res_f = max([abs(r_[1]) for r_ in res_nodi] + [abs(r_[2]) for r_ in res_nodi] + [0.0])
-        max_res_m = max([abs(r_[3]) for r_ in res_nodi] + [abs(c_[2]) for c_ in res_cern] + [0.0])
-        nodi_ko = [r_[0] for r_ in res_nodi if max(abs(r_[1]), abs(r_[2])) > 1e-6 * scala_f or abs(r_[3]) > 1e-6 * scala_m]
-        cern_ko = [(c_[0], c_[1]) for c_ in res_cern if abs(c_[2]) > 1e-6 * scala_m]
-        ULTIMI_RISULTATI['equilibrio_nodi'] = (max_res_f, max_res_m)
-        ULTIMI_RISULTATI['nodi_non_in_equilibrio'] = nodi_ko + [c_[0] for c_ in cern_ko]
-        if not nodi_ko and not cern_ko:
-            print(f"[VERIFICA EQUILIBRIO NODI] OK: residuo max forze={max_res_f:.2e} N, momenti={max_res_m:.2e} N*m")
-        else:
-            elenco_ko = ", ".join(f"N{n_}" for n_ in nodi_ko) + (", cerniere: " + ", ".join(f"asta {e_} al nodo N{n_}" for n_, e_ in cern_ko) if cern_ko else "")
-            report.append("<h3>Controllo di coerenza: equilibrio di ogni nodo (N, T, M finali)</h3>")
-            report.append("<div style='background-color:#f8d7da; color:#842029; padding:10px; border-left:4px solid #dc3545; margin-bottom:15px;'>"
-                          f"&#10008; Equilibrio ai nodi NON soddisfatto ({elenco_ko}): residuo massimo forze = {fmt_sci_html(max_res_f)} N, momenti = {fmt_sci_html(max_res_m)} N&middot;m. "
-                          "Le sollecitazioni calcolate sono incoerenti con carichi e reazioni: non fidarti dei risultati.</div>")
+    # Identazione sentinella per il blocco Sezione 8 e 9 sotto
+    if True:
 
         # ==========================================
         # FASE 9: SEZIONE CRITICA E VERIFICA / DIMENSIONAMENTO (Condizionale)
@@ -2979,68 +3285,59 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
                 f"<tr>{cells}</tr></table>"
             )
 
+        report.append("<h2 style='margin-top: 26px;'>8. Sezione pi&ugrave; sollecitata e verifica di resistenza (Navier)</h2>")
+
         if not in_progetto:
             # ==========================================
-            # RAMO VERIFICA
+            # RAMO VERIFICA (termina in Sezione 8, salta Sezione 9)
             # ==========================================
-            report.append("<h2 style='margin-top: 30px;'>9. Sezione Critica e Verifica di Resistenza (Navier)</h2>")
             if ver_type == 'bending_only':
-                report.append("<p>Si individua la sezione critica cercando il punto in cui il <b>Momento Flettente |M(s)|</b> raggiunge il massimo valore assoluto (Criterio: Flessione Semplice).</p>")
+                report.append("<p>Criterio: <b>Flessione semplice</b> (&sigma;(s) = |M(s)| / W).</p>")
             else:
-                report.append("<p>Si individua la sezione critica cercando il punto in cui la <b>tensione normale combinata</b> &sigma;(s) = |N(s)|/A + |M(s)|/W raggiunge il massimo valore assoluto (Criterio: Presso/Tensoflessione).</p>")
+                report.append("<p>Criterio: <b>Presso/Tensoflessione combinata</b> (&sigma;(s) = |N(s)| / A + |M(s)| / W).</p>")
 
             top_ver = _raccogli_top_sezioni(punti_NM, lambda e_, s_, n_, m_: _sigma_punti(n_, m_), top_n=3)
-            report.append("<div style='background-color: #f8f9fa; padding: 18px; border-left: 5px solid #0a58ca; border-radius: 4px; margin-bottom: 20px;'>")
-            report.append("<h4 style='color: #0a58ca; margin-top:0;'>1. Individuazione della Sezione Critica</h4>")
+            report.append("<div style='background-color: #f8f9fa; padding: 16px; border-left: 5px solid #0a58ca; border-radius: 4px; margin-bottom: 18px;'>")
             if asta_critica is not None:
-                report.append(f"<p>La tensione normale massima si raggiunge nell'<b>Asta {asta_critica}</b> all'ascissa locale <b>s = {fmt_num(s_critico, 2)} m</b> "
-                              f"(|N| = {fmt_num(abs(N_in_s_critico), 2)} N, |M| = {fmt_num(abs(M_in_s_critico), 2)} N&middot;m).</p>")
-                if len(top_ver) > 1:
-                    report.append("<table><tr><th>Asta</th><th>Ascissa s [m]</th><th>|N| [N]</th><th>|M| [N&middot;m]</th><th>&sigma; [MPa]</th><th>Note</th></tr>")
+                if top_ver:
+                    report.append("<table><tr><th>Asta</th><th>s [m]</th><th>|N| [N]</th><th>|M| [N&middot;m]</th><th>&sigma; [MPa]</th><th>Ruolo</th></tr>")
                     for sc_v, e_v, s_v, n_v, m_v in top_ver:
                         is_gov = (e_v == asta_critica and abs(s_v - s_critico) < 1e-4)
-                        nota = "<b style='color:#0a58ca;'>Sezione critica</b>" if is_gov else "Confronto"
-                        report.append(f"<tr><td>Asta {e_v}</td><td>{fmt_num(s_v, 2)}</td><td>{fmt_num(n_v, 2)}</td><td>{fmt_num(m_v, 2)}</td><td><b>{sc_v/1e6:.2f}</b></td><td>{nota}</td></tr>")
+                        ruolo = "<b style='color:#0a58ca;'>Sezione critica</b>" if is_gov else "Confronto"
+                        report.append(f"<tr><td>Asta {e_v}</td><td>{fmt_num(s_v, 2)}</td><td>{fmt_num(n_v, 2)}</td><td>{fmt_num(m_v, 2)}</td><td><b>{sc_v/1e6:.2f}</b></td><td>{ruolo}</td></tr>")
                     report.append("</table>")
-                if len(sezioni_equivalenti) > 1:
-                    elenco_eq = "; ".join(f"Asta {a_} (s = {fmt_num(s_, 2)} m)" for a_, s_ in sezioni_equivalenti[:6])
-                    report.append(f"<p><small>Altre sezioni con pari tensione massima: {elenco_eq}.</small></p>")
+                report.append(f"<p>La tensione normale massima si raggiunge nell'<b>Asta {asta_critica}</b> a <b>s = {fmt_num(s_critico, 2)} m</b> "
+                              f"(|N| = {fmt_num(abs(N_in_s_critico), 2)} N, |M| = {fmt_num(abs(M_in_s_critico), 2)} N&middot;m).</p>")
             else:
                 report.append("<p>Sollecitazioni nulle su tutta la struttura.</p>")
 
-            report.append("<h4 style='color: #0a58ca;'>2. Dati della Sezione e del Materiale</h4>")
-            report.append(f"<ul style='margin-bottom: 12px;'><li>Base b = {fmt_num(b_sec, 3)} m, Altezza h = {fmt_num(h_sec, 3)} m</li>")
-            report.append(f"<li>Area A = b&middot;h = <b>{fmt_sci_html(Area)} m<sup>2</sup></b> &nbsp;|&nbsp; Modulo di resistenza W = (b&middot;h<sup>2</sup>)/6 = <b>{fmt_sci_html(W_f)} m<sup>3</sup></b></li>")
-            report.append(f"<li>Tensione ammissibile del materiale: &sigma;<sub>amm</sub> = <b>{fmt_num(sigma_amm/1e6, 2)} MPa</b></li></ul>")
-
-            report.append("<h4 style='color: #0a58ca;'>3. Verifica di Resistenza (Navier) e Margine di Sicurezza (MS)</h4>")
-            report.append("<div style='margin-bottom: 15px;'>")
+            _area_h = fmt_num(Area, 4) if Area >= 1e-3 else fmt_sci_html(Area)
+            report.append(f"<p>Sezione assegnata: b = {fmt_num(b_sec, 3)} m, h = {fmt_num(h_sec, 3)} m &rarr; "
+                          f"A = {_area_h} m<sup>2</sup>, W = b&middot;h<sup>2</sup>/6 = {fmt_sci_html(W_f)} m<sup>3</sup>, "
+                          f"&sigma;<sub>amm</sub> = {fmt_num(sigma_amm/1e6, 2)} MPa.</p>")
+            report.append("<div style='margin: 10px 0 14px 0;'>")
             if ver_type == 'bending_only':
-                report.append(f"<span class='formula' style='color: #000000;'>&sigma;<sub>max</sub> = |M| / W = {fmt_num(abs(M_in_s_critico), 2)} / ({fmt_sci_html(W_f)}) = <b>{max_sigma_calcolata/1e6:.2f} MPa</b></span><br><br>")
+                report.append(f"<span class='formula' style='color:#000000;'>&sigma;<sub>max</sub> = |M| / W = {fmt_num(abs(M_in_s_critico), 2)} / ({fmt_sci_html(W_f)}) = <b>{max_sigma_calcolata/1e6:.2f} MPa</b></span><br><br>")
             else:
-                report.append(f"<span class='formula' style='color: #000000;'>&sigma;<sub>max</sub> = |N|/A + |M|/W = {fmt_num(abs(N_in_s_critico), 2)}/({fmt_sci_html(Area)}) + {fmt_num(abs(M_in_s_critico), 2)}/({fmt_sci_html(W_f)}) = <b>{max_sigma_calcolata/1e6:.2f} MPa</b></span><br><br>")
+                report.append(f"<span class='formula' style='color:#000000;'>&sigma;<sub>max</sub> = |N|/A + |M|/W = {fmt_num(abs(N_in_s_critico), 2)}/({_area_h}) + {fmt_num(abs(M_in_s_critico), 2)}/({fmt_sci_html(W_f)}) = <b>{max_sigma_calcolata/1e6:.2f} MPa</b></span><br><br>")
             if MS != float('inf'):
-                report.append(f"<span class='formula' style='color: #000000;'>MS = (&sigma;<sub>amm</sub> / &sigma;<sub>max</sub>) &minus; 1 = {sigma_amm/1e6:.2f} / {max_sigma_calcolata/1e6:.2f} &minus; 1 = <b>{MS:.2f}</b></span>")
+                report.append(f"<span class='formula' style='color:#000000;'>MS = (&sigma;<sub>amm</sub> / &sigma;<sub>max</sub>) &minus; 1 = {sigma_amm/1e6:.2f} / {max_sigma_calcolata/1e6:.2f} &minus; 1 = <b>{MS:.2f}</b></span>")
             else:
-                report.append("<span class='formula' style='color: #000000;'>MS = &infin;</span>")
+                report.append("<span class='formula' style='color:#000000;'>MS = &infin;</span>")
             report.append("</div>")
 
             if is_verified:
-                report.append("<div style='text-align:center; padding:15px; background-color:#d1e7dd; color:#0f5132; border: 2px solid #198754; font-size: 16px; margin-top: 10px; border-radius: 6px;'>")
-                report.append(f"<b>MS = {MS:.2f} {op_html} {MS_target:.2f}</b><br>")
-                report.append("VERIFICATO &#10004;</div>")
+                report.append("<div style='text-align:center; padding:14px; background-color:#d1e7dd; color:#0f5132; border: 2px solid #198754; font-size: 16px; border-radius: 6px;'>")
+                report.append(f"<b>MS = {MS:.2f} {op_html} {MS_target:.2f}</b><br>VERIFICATA &#10004;</div>")
             else:
-                report.append("<div style='text-align:center; padding:15px; background-color:#f8d7da; color:#842029; border: 2px solid #dc3545; font-size: 16px; margin-top: 10px; border-radius: 6px;'>")
-                report.append(f"<b>MS = {MS:.2f} (Richiesto {op_html} {MS_target:.2f})</b><br>")
-                report.append("NON VERIFICATO &#10008;</div>")
+                report.append("<div style='text-align:center; padding:14px; background-color:#f8d7da; color:#842029; border: 2px solid #dc3545; font-size: 16px; border-radius: 6px;'>")
+                report.append(f"<b>MS = {MS:.2f} (Richiesto {op_html} {MS_target:.2f})</b><br>NON VERIFICATA &#10008;</div>")
             report.append("</div>")
 
         else:
             # ==========================================
-            # RAMO DIMENSIONAMENTO (Unico paragrafo 9: Sezione critica + Cubica/Equazione diretta in b e h)
+            # RAMO DIMENSIONAMENTO: Sezione 8 (Confronto sezioni candidate) + Sezione 9 (Cubica e soluzione)
             # ==========================================
-            report.append("<h2 style='margin-top: 30px;'>9. Individuazione della Sezione Critica e Dimensionamento della Sezione</h2>")
-
             sigma_amm_val = float(dati_json.get('material', {}).get('sigma_amm', 235e6))
             sigma_target_val = sigma_amm_val / (1 + MS_d_target) if 1 + MS_d_target > 1e-9 else float('nan')
             ratio_k = float(dati_json.get('section', {}).get('ratio', 0) or 0)
@@ -3100,10 +3397,10 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
                 if not cand_d:
                     if interv_d:
                         problema_design = ('avviso', "Dimensionamento: nessun limite",
-                                           f"Con le distorsioni assegnate la richiesta &egrave; soddisfatta da {testo_d} (nessun limite nell'intervallo esplorato).")
+                                           f"Con le distorsioni assegnate la richiesta &egrave; soddisfatta da {testo_d}.")
                     else:
                         problema_design = ('errore', "Dimensionamento senza soluzione",
-                                           f"Nessuna dimensione tra {D_LO*100:g} cm e {D_HI:g} m soddisfa la richiesta sul margine di sicurezza.")
+                                           f"Nessuna dimensione tra {D_LO*100:g} cm e {D_HI:g} m soddisfa la richiesta.")
                 else:
                     d_ref = float(cand_d[0])
                     b_ref, h_ref = _sez_d(d_ref)
@@ -3166,7 +3463,6 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
                 asta_gov, s_gov = asta_critica, s_critico
             sei_Me = 6 * M_E_abs
 
-            # 1) Confronto sezioni candidate piu' sollecitate
             def _score_dim(e_, sv_, nv_, mv_):
                 n_use = np.abs(nv_) if combinato else np.zeros_like(nv_)
                 if design == 'b': return (n_use * h_sec + 6 * np.abs(mv_))
@@ -3175,21 +3471,25 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
                 return np.cbrt(6 * np.abs(mv_) / k_u**2 + 1.0) + np.sqrt(n_use / k_u + 1.0) * 0.01
 
             top_dim = _raccogli_top_sezioni(punti_NM, _score_dim, top_n=3)
-            report.append("<div style='background-color: #f8f9fa; padding: 18px; border-left: 5px solid #0a58ca; border-radius: 4px; margin-bottom: 20px;'>")
-            report.append("<h4 style='color: #0a58ca; margin-top:0;'>1. Confronto delle Sezioni Pi&ugrave; Sollecitate</h4>")
+            report.append("<div style='background-color: #f8f9fa; padding: 14px 16px; border-left: 5px solid #0a58ca; border-radius: 4px; margin-bottom: 18px;'>")
             if top_dim:
-                report.append("<table><tr><th>Asta</th><th>Ascissa s [m]</th><th>|N| [N]</th><th>|M| [N&middot;m]</th><th>Ruolo</th></tr>")
+                report.append("<table><tr><th>Asta</th><th>s [m]</th><th>|N| [N]</th><th>|M| [N&middot;m]</th><th>Ruolo</th></tr>")
                 for _, e_v, s_v, n_v, m_v in top_dim:
                     is_gov = (asta_gov is not None and e_v == asta_gov and abs(s_v - s_gov) < 1e-3)
                     ruolo = "<b style='color:#0a58ca;'>Sezione critica governante</b>" if is_gov else "Sezione candidata"
                     report.append(f"<tr><td>Asta {e_v}</td><td>{fmt_num(s_v, 2)}</td><td>{fmt_num(n_v, 2)}</td><td>{fmt_num(m_v, 2)}</td><td>{ruolo}</td></tr>")
                 report.append("</table>")
-                if asta_gov is not None:
-                    report.append(f"<p>La sezione che governa il dimensionamento &egrave; nell'<b>Asta {asta_gov}</b> a <b>s = {fmt_num(s_gov, 2)} m</b> "
-                                  f"(|N<sub>E</sub>| = {fmt_num(N_E_abs, 2)} N, |M<sub>E</sub>| = {fmt_num(M_E_abs, 2)} N&middot;m).</p>")
+            if asta_gov is not None:
+                report.append(f"<p>La sezione che governa il dimensionamento &egrave; nell'<b>Asta {asta_gov}</b> a <b>s = {fmt_num(s_gov, 2)} m</b> "
+                              f"(|N<sub>E</sub>| = {fmt_num(N_E_abs, 2)} N, |M<sub>E</sub>| = {fmt_num(M_E_abs, 2)} N&middot;m). "
+                              "Si procede direttamente al dimensionamento alla Sezione 9.</p>")
+            report.append("</div>")
 
-            # 2) Impostazione diretta dell'equazione/cubica di progetto in b e h
-            report.append("<h4 style='color: #0a58ca;'>2. Impostazione della Condizione di Progetto e Risoluzione</h4>")
+            # ==========================================
+            # SEZIONE 9: DIMENSIONAMENTO DELLA SEZIONE
+            # ==========================================
+            report.append("<h2 style='margin-top: 24px;'>9. Dimensionamento della sezione</h2>")
+            report.append("<div style='background-color: #f8f9fa; padding: 16px; border-left: 5px solid #0a58ca; border-radius: 4px; margin-bottom: 20px;'>")
             sigma_target_html = fmt_sci_html(sigma_target_val) if sigma_target_val == sigma_target_val else "n.d."
             bl_style = "border-left: 3px solid #0d6efd; background-color: #ffffff; padding: 10px 15px; margin: 10px 0 15px 0;"
 
@@ -3202,16 +3502,16 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
                                    f"= {fmt_num(sigma_target_val/1e6, 2)} MPa ({sigma_target_html} Pa)"))
             if ver_type == 'bending_only':
                 report.append(eq_table("&sigma;<sub>max</sub> =", _frac_html("|M<sub>E</sub>|", "W", "#000000"), "=",
-                                       _frac_html("6&middot;|M<sub>E</sub>|", "b&middot;h<sup>2</sup>", "#000000"),
+                                       _frac_html("6&middot;|M<sub>E</sub>|", "b&middot;h<sup>2</sup>", "#000000"), "=",
+                                       _frac_html(f"{fmt_num(sei_Me, 2)}", "b&middot;h<sup>2</sup>", "#000000"),
                                        sigma_op_html_d, f"{sigma_target_html} Pa"))
             else:
                 report.append(eq_table("&sigma;<sub>max</sub> =", _frac_html("|N<sub>E</sub>|", "A", "#000000"), "+",
                                        _frac_html("|M<sub>E</sub>|", "W", "#000000"), "=",
-                                       _frac_html("h&middot;|N<sub>E</sub>| + 6&middot;|M<sub>E</sub>|", "b&middot;h<sup>2</sup>", "#000000"),
+                                       _frac_html(f"h&middot;{fmt_num(N_E_abs, 2)} + {fmt_num(sei_Me, 2)}", "b&middot;h<sup>2</sup>", "#000000"),
                                        sigma_op_html_d, f"{sigma_target_html} Pa"))
             report.append("</div>")
 
-            # Forma ridotta specifica per h=k*b, b fissata o h fissata
             if not sez_dip and esito_design is not None:
                 report.append(f"<div style=\"{bl_style}\">")
                 if design == 'ratio':
@@ -3221,12 +3521,13 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
                     ineq_pol = "&ge;" if MS_d_op in (">", ">=") else ("&le;" if MS_d_op in ("<", "<=") else "=")
                     report.append(f"<p style='margin:0 0 6px 0;'>Sostituendo <b>h = {fmt_num(ratio_k, 2)}&middot;b</b> si ottiene l'equazione cubica in <i>b</i>:</p>")
                     if combinato and c1 > 1e-9:
-                        report.append(eq_table(f"&sigma;<sub>t</sub>&middot;b<sup>3</sup> &minus;",
-                                               _frac_html("|N<sub>E</sub>|", "k", "#000000") + "&middot;b &minus;",
+                        report.append(eq_table("&sigma;<sub>t</sub>&middot;b<sup>3</sup> &minus;",
+                                               _frac_html("|N<sub>E</sub>|", "k", "#000000"),
+                                               "&middot;b &minus;",
                                                _frac_html("6&middot;|M<sub>E</sub>|", "k<sup>2</sup>", "#000000"),
                                                f"{ineq_pol} 0 &rArr; {sigma_target_html}&middot;b<sup>3</sup> &minus; {fmt_num(c1, 2)}&middot;b &minus; {fmt_num(c0, 2)} {ineq_pol} 0"))
                     else:
-                        report.append(eq_table(f"&sigma;<sub>t</sub>&middot;b<sup>3</sup> &minus;",
+                        report.append(eq_table("&sigma;<sub>t</sub>&middot;b<sup>3</sup> &minus;",
                                                _frac_html("6&middot;|M<sub>E</sub>|", "k<sup>2</sup>", "#000000"),
                                                f"{ineq_pol} 0 &rArr; {sigma_target_html}&middot;b<sup>3</sup> &minus; {fmt_num(c0, 2)} {ineq_pol} 0"))
                 elif design == 'h':
@@ -3242,7 +3543,6 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
                     report.append(eq_table(f"b {op_html_d}", _frac_html(num_b, f"{fmt_sci_html(sigma_target_val * h_sec**2)}", "#000000")))
                 report.append("</div>")
 
-            # Relazione letterale quando cedimenti / delta T rendono X1 funzione di (b, h)
             lett_attiva = (dip_ced and not EI_dir) or dip_term
             if lett_attiva and 1 + MS_d_target > 1e-9:
                 try:
@@ -3307,52 +3607,21 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
                                   f"(sezione critica: Asta {esito_design['asta']}, s = {fmt_num(esito_design['s'], 2)} m).</p>")
                     esito = esito_design['testo']
                     if design == 'ratio':
-                        esito += f"<br><small>(con h = {fmt_num(ratio_k, 2)}&middot;b; per b = {b_ref:.4f} m: h = {h_ref:.4f} m)</small>"
+                        esito += f"<br><small>(con h = {fmt_num(ratio_k, 2)}&middot;b; per b<sub>min</sub> = {b_ref:.4f} m: h<sub>min</sub> = {h_ref:.4f} m)</small>"
                     elif design == 'b':
                         esito += f"<br><small>(con h = {fmt_num(h_sec, 3)} m assegnata)</small>"
                     else:
                         esito += f"<br><small>(con b = {fmt_num(b_sec, 3)} m assegnata)</small>"
                 elif design == 'b':
-                    esito = f"b {op_html_d} {b_ref:.4f} m ({b_ref*100:.2f} cm) &nbsp;(con h = {fmt_num(h_sec, 3)} m assegnata)"
+                    esito = f"b<sub>min</sub> = {b_ref:.4f} m ({b_ref*100:.2f} cm) &rArr; b {op_html_d} {b_ref:.4f} m &nbsp;(h = {fmt_num(h_sec, 3)} m)"
                 elif design == 'h':
-                    esito = f"h {op_html_d} {h_ref:.4f} m ({h_ref*100:.2f} cm) &nbsp;(con b = {fmt_num(b_sec, 3)} m assegnata)"
+                    esito = f"h<sub>min</sub> = {h_ref:.4f} m ({h_ref*100:.2f} cm) &rArr; h {op_html_d} {h_ref:.4f} m &nbsp;(b = {fmt_num(b_sec, 3)} m)"
                 else:
-                    esito = f"b {op_html_d} {b_ref:.4f} m ({b_ref*100:.2f} cm), &nbsp;h = {fmt_num(ratio_k, 2)}&middot;b {op_html_d} {h_ref:.4f} m ({h_ref*100:.2f} cm)"
+                    esito = f"b<sub>min</sub> = {b_ref:.4f} m ({b_ref*100:.2f} cm), &nbsp;h<sub>min</sub> = {fmt_num(ratio_k, 2)}&middot;b<sub>min</sub> = {h_ref:.4f} m ({h_ref*100:.2f} cm)"
                 report.append("<div style='text-align:center; padding:15px; background-color:#d1e7dd; color:#0f5132; border: 2px solid #198754; font-size: 16px; margin-top: 10px; border-radius: 6px;'>")
-                report.append(f"<b>{esito}</b><br><small>Controllo margine di sicurezza con la sezione determinata: MS = {MS_c:.2f}</small></div>")
+                report.append(f"<b>{esito}</b><br><small>Controllo finale: MS = {MS_c:.2f}</small></div>")
                 ULTIMI_RISULTATI['dimensionamento'] = dict(esito_design)
             report.append("</div>")
-
-    # ==========================================
-    # FASE 10: GRAFICI MATPLOTLIB FINALI
-    # ==========================================
-    percorso_S1 = "plv_S0_S1.png"
-    percorso_diag = "plv_diagrammi.png"
-
-    # Plot Schema Generale della Struttura Reale
-    plot_schema_generale(
-        nodi, elementi, supports_n, cerniere_interne,
-        dati_json.get('point_loads', []),
-        dati_json.get('element_loads', []),
-        dati_json.get('thermal_loads', []),
-        out_dir, percorso_S1
-    )
-
-    plt, _ = _get_mpl()
-    nodi_f = {k: (float(v[0]), float(v[1])) for k, v in nodi.items()}
-    fig_diag, axes = plt.subplots(3, 1, figsize=(9.5, 14.5))
-    try:
-        if X1_valore_numerico is not None:
-            M_fin_all = {el['id']: (M0_dict[el['id']] + X1_exact * M1_dict[el['id']] if grado_iperstaticita > 0 else M0_dict[el['id']]) for el in elementi}
-            T_fin_all = {el['id']: (T0_dict[el['id']] + X1_exact * T1_dict[el['id']] if grado_iperstaticita > 0 else T0_dict[el['id']]) for el in elementi}
-            N_fin_all = {el['id']: (N0_dict[el['id']] + X1_exact * N1_dict[el['id']] if grado_iperstaticita > 0 else N0_dict[el['id']]) for el in elementi}
-            _disegna_diagramma_su_ax(axes[0], nodi_f, elementi, M_fin_all, "Momento Flettente M(s) [N·m] — lato delle fibre tese", "crimson")
-            _disegna_diagramma_su_ax(axes[1], nodi_f, elementi, T_fin_all, "Taglio T(s) [N]", "forestgreen")
-            _disegna_diagramma_su_ax(axes[2], nodi_f, elementi, N_fin_all, "Sforzo Normale N(s) [N]", "dodgerblue")
-        plt.tight_layout()
-        plt.savefig(os.path.join(out_dir, percorso_diag), bbox_inches='tight', dpi=130)
-    finally:
-        plt.close(fig_diag)
 
     return "\n".join(report), percorso_S1, percorso_diag
 
