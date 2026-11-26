@@ -14,47 +14,66 @@ os.chdir(base_dir)
 
 # --- COMPATIBILITÀ PYTHON 3.9 PER 'Self' ---
 import typing
-try:
-    from typing_extensions import Self
-    if not hasattr(typing, 'Self'):
+if not hasattr(typing, 'Self'):
+    try:
+        from typing_extensions import Self
         setattr(typing, 'Self', Self)
-except ImportError:
-    pass
+    except ImportError:
+        pass
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl, QMarginsF
+import copy
+import html
+import math
+import re
+import shutil
+import threading
+import time
+
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl, QMarginsF, QTimer
 from PyQt6.QtGui import QFont, QIcon, QPageLayout, QPageSize
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-    QPushButton, QTextEdit, QLabel, QFileDialog, QMessageBox, 
-    QComboBox, QSplitter, QTabWidget, QTextBrowser
-)
-# IMPORTANTE: Aggiunto modulo per la stampa PDF
-from PyQt6.QtPrintSupport import QPrinter
-
-try:
-    from solutore_plv import risolvi_struttura_plv, normalizza_dati, valida_dati
-except Exception as e:
-    print(f"ERRORE CRITICO NELL'IMPORT DI solutore_plv: {e}")
-    normalizza_dati = valida_dati = None
-
-import math
-from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-    QPushButton, QTextEdit, QLabel, QFileDialog, QMessageBox, 
-    QComboBox, QSplitter, QTabWidget, QTextBrowser,
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QTextEdit, QLabel, QFileDialog, QMessageBox,
+    QComboBox, QSplitter, QTabWidget, QTextBrowser, QStackedWidget,
     QGroupBox, QFormLayout, QDoubleSpinBox, QListWidget, QScrollArea, QGridLayout, QLineEdit,
     QDialog, QDialogButtonBox, QListWidgetItem, QToolButton, QFrame, QSizePolicy
 )
-import copy
-import html
-import re
-import shutil
-import time
 
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
-from matplotlib.markers import MarkerStyle
-from matplotlib.patches import Polygon as PoligonoMpl, Circle as CerchioMpl
+_IMPORT_LOCK = threading.Lock()
+_SOLUTORE_MOD = None
+_SOLUTORE_ERR = None
+_UI_MPL = None
+
+def _get_solutore():
+    """Import lazy e thread-safe di solutore_plv (evita il caricamento di SymPy/NumPy all'apertura)."""
+    global _SOLUTORE_MOD, _SOLUTORE_ERR
+    if _SOLUTORE_MOD is not None:
+        return _SOLUTORE_MOD
+    with _IMPORT_LOCK:
+        if _SOLUTORE_MOD is not None:
+            return _SOLUTORE_MOD
+        try:
+            import solutore_plv as _mod
+            _SOLUTORE_MOD = _mod
+            return _mod
+        except Exception as e:
+            _SOLUTORE_ERR = e
+            print(f"ERRORE CRITICO NELL'IMPORT DI solutore_plv: {e}")
+            return None
+
+def _get_ui_mpl():
+    """Import lazy dei componenti Matplotlib usati per l'Anteprima Live."""
+    global _UI_MPL
+    if _UI_MPL is not None:
+        return _UI_MPL
+    with _IMPORT_LOCK:
+        if _UI_MPL is not None:
+            return _UI_MPL
+        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+        from matplotlib.figure import Figure
+        from matplotlib.patches import Polygon as PoligonoMpl, Circle as CerchioMpl
+        _UI_MPL = (FigureCanvas, Figure, PoligonoMpl, CerchioMpl)
+        return _UI_MPL
 
 # Tipi di vincolo a terra selezionabili (l'ordine e' quello dei menu a tendina; _costruisci_vincolo/_tipo_da_vincolo li traducono)
 TIPI_VINCOLO = [
@@ -158,7 +177,10 @@ class SolverThread(QThread):
 
     def run(self):
         try:
-            report_html, img_s1, img_diag = risolvi_struttura_plv(self.dati_json, self.out_dir, self.incognita)
+            mod = _get_solutore()
+            if mod is None:
+                raise RuntimeError(f"Modulo solutore_plv non disponibile: {_SOLUTORE_ERR}")
+            report_html, img_s1, img_diag = mod.risolvi_struttura_plv(self.dati_json, self.out_dir, self.incognita)
             self.finished_signal.emit(report_html, img_s1, img_diag)
         except Exception as e:
             error_details = traceback.format_exc()
@@ -198,6 +220,19 @@ class UIStrutture(QMainWindow):
         self.setup_ui()
         self._collega_segnali_proprieta()
         self.setStyleSheet(self.get_stylesheet())
+        QTimer.singleShot(80, self._avvia_prewarm_asincrono)
+
+    def _avvia_prewarm_asincrono(self):
+        """Pre-carica in background (dopo la visualizzazione della finestra) i moduli pesanti."""
+        def _worker():
+            with _IMPORT_LOCK:
+                try:
+                    import matplotlib.figure  # noqa: F401
+                    import matplotlib.patches  # noqa: F401
+                except Exception:
+                    pass
+            _get_solutore()
+        threading.Thread(target=_worker, daemon=True).start()
 
     def get_stylesheet(self):
         return """
@@ -336,15 +371,33 @@ class UIStrutture(QMainWindow):
         
         self.right_tabs = QTabWidget()
         
-        # 🟢 NUOVA SCHEDA A DESTRA: Anteprima Live
+        # 🟢 NUOVA SCHEDA A DESTRA: Anteprima Live (placeholder Qt leggero all'avvio; canvas Matplotlib lazy al primo disegno)
         self.tab_preview = QWidget()
         preview_layout = QVBoxLayout(self.tab_preview)
-        
-        # Creiamo il canvas grafico di Matplotlib per il disegno in tempo reale
-        self.fig = Figure(figsize=(5, 4), dpi=100)
-        self.ax = self.fig.add_subplot(111)
-        self.canvas = FigureCanvas(self.fig)
-        preview_layout.addWidget(self.canvas)
+        preview_layout.setContentsMargins(6, 6, 6, 6)
+        self.preview_stack = QStackedWidget()
+        self.preview_placeholder = QWidget()
+        self.preview_placeholder.setStyleSheet("background-color: #ffffff;")
+        _ph_lay = QVBoxLayout(self.preview_placeholder)
+        _lbl_ph_tit = QLabel("Costruzione in tempo reale")
+        _lbl_ph_tit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        _lbl_ph_tit.setStyleSheet("color: #495057; font-size: 14px; font-weight: bold; padding-top: 12px;")
+        _lbl_ph_msg = QLabel("Aggiungi un nodo per iniziare")
+        _lbl_ph_msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        _lbl_ph_msg.setStyleSheet("color: #868e96; font-size: 13px; font-weight: normal;")
+        _ph_lay.addWidget(_lbl_ph_tit)
+        _ph_lay.addStretch(1)
+        _ph_lay.addWidget(_lbl_ph_msg)
+        _ph_lay.addStretch(1)
+        self._canvas_host = QWidget()
+        self._canvas_layout = QVBoxLayout(self._canvas_host)
+        self._canvas_layout.setContentsMargins(0, 0, 0, 0)
+        self.preview_stack.addWidget(self.preview_placeholder)
+        self.preview_stack.addWidget(self._canvas_host)
+        preview_layout.addWidget(self.preview_stack)
+        self.fig = None
+        self.ax = None
+        self.canvas = None
         self.right_tabs.addTab(self.tab_preview, "👀 Anteprima Live")
         
         # 🟢 SECONDA SCHEDA: Il Report HTML di Calcolo
@@ -359,10 +412,18 @@ class UIStrutture(QMainWindow):
             table { width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 15px; background-color: #ffffff; }
             th { background-color: #e9ecef; border: 1px solid #ced4da; padding: 8px; font-weight: bold; color: #000000; font-size: 13px; }
             td { border: 1px solid #ced4da; padding: 8px; text-align: center; color: #000000; font-size: 13px; }
+            .eq-table, .eq-table td, .frac-table, .frac-table td { border: none; width: auto; background: transparent; padding: 0 3px; }
             .formula { font-family: 'Courier New', Courier, monospace; font-size: 14px; font-weight: bold; color: #0b5ed7; background-color: #f1f3f5; padding: 2px 6px; border-radius: 4px; border: 1px solid #dee2e6;}
         """)
         self.html_view.setHtml("<h2>Pronto</h2><p>Costruisci la struttura per vederla nell'Anteprima Live.</p>")
         report_layout.addWidget(self.html_view)
+        self.lbl_controlli_solver = QLabel("Nessun calcolo eseguito.")
+        self.lbl_controlli_solver.setWordWrap(True)
+        self.lbl_controlli_solver.setStyleSheet(
+            "background-color: #f8f9fa; color: #495057; border: 1px solid #dee2e6; "
+            "border-radius: 4px; padding: 6px 10px; font-size: 12px;"
+        )
+        report_layout.addWidget(self.lbl_controlli_solver)
         
         self.right_tabs.addTab(self.tab_report, "📄 Report di Calcolo")
         right_layout.addWidget(self.right_tabs)
@@ -374,9 +435,6 @@ class UIStrutture(QMainWindow):
         splitter.setStretchFactor(1, 2)
         _tot = max(self.width() - 40, 1000)
         splitter.setSizes([int(_tot * 0.58), int(_tot * 0.42)])
-        
-        # Facciamo un primo disegno vuoto
-        self.update_live_preview()
 
     def setup_disegna_tab(self):
         """Inizializza la UI tabellare/form per la costruzione della struttura."""
@@ -938,10 +996,11 @@ class UIStrutture(QMainWindow):
 
     def _errori_dati(self, dati):
         """Stessi controlli del solutore (id duplicati, nodi coincidenti, vincoli sovrapposti, riferimenti inesistenti...)."""
-        if normalizza_dati is None or valida_dati is None:
+        mod = _get_solutore()
+        if mod is None:
             return []
         try:
-            return [html.unescape(re.sub(r"<[^>]+>", "", m)) for m in valida_dati(normalizza_dati(copy.deepcopy(dati)))]
+            return [html.unescape(re.sub(r"<[^>]+>", "", m)) for m in mod.valida_dati(mod.normalizza_dati(copy.deepcopy(dati)))]
         except Exception as e:
             return [f"Dati incompleti o non numerici: {e}"]
 
@@ -1775,6 +1834,11 @@ class UIStrutture(QMainWindow):
         if not img_s1 or not img_diag:
             self.html_view.setHtml(f"<h1>Svolgimento Metodo delle Forze (PLV)</h1>{test_report}")
             self.btn_pdf.setEnabled(False)
+            self.lbl_controlli_solver.setText("Analisi interrotta.")
+            self.lbl_controlli_solver.setStyleSheet(
+                "background-color: #f8d7da; color: #842029; border: 1px solid #f5c2c7; "
+                "border-radius: 4px; padding: 6px 10px; font-size: 12px;"
+            )
             self.right_tabs.setCurrentWidget(self.tab_report)
             return
 
@@ -1784,14 +1848,36 @@ class UIStrutture(QMainWindow):
         
         html_finale = f"""
         <h1>Svolgimento Metodo delle Forze (PLV)</h1>
-        <h2>1. Schema Strutturale (S1)</h2>
+        <h2>Schema Generale della Struttura</h2>
         <div style="text-align: center;"><img src="{url_s1}" width="700"></div>
         {test_report}
-        <h2>11. Diagrammi delle Sollecitazioni Finali (M, T, N)</h2>
+        <h2>10. Diagrammi delle Sollecitazioni Finali (N, T, M)</h2>
         <div style="text-align: center;"><img src="{url_diag}" width="750"></div>
         """
         self.html_view.setHtml(html_finale)
         self.btn_pdf.setEnabled(True)
+        mod = _get_solutore()
+        ultimi = mod.ULTIMI_RISULTATI if mod is not None else {}
+        res_g = ultimi.get("equilibrio_globale", 0.0)
+        res_n = ultimi.get("equilibrio_nodi", (0.0, 0.0))
+        ko_n = ultimi.get("nodi_non_in_equilibrio", [])
+        if not ko_n and res_g < 1e-6:
+            self.lbl_controlli_solver.setText(
+                f"✓ Controlli numerici (solo GUI, esclusi dal PDF): "
+                f"equilibrio globale res = {res_g:.1e} | equilibrio nodi max forze = {res_n[0]:.1e} N, momenti = {res_n[1]:.1e} N·m."
+            )
+            self.lbl_controlli_solver.setStyleSheet(
+                "background-color: #d1e7dd; color: #0f5132; border: 1px solid #badbcc; "
+                "border-radius: 4px; padding: 6px 10px; font-size: 12px;"
+            )
+        else:
+            self.lbl_controlli_solver.setText(
+                f"✘ Attenzione: residuo equilibrio globale = {res_g:.2e}, nodi non equilibrati = {ko_n}"
+            )
+            self.lbl_controlli_solver.setStyleSheet(
+                "background-color: #f8d7da; color: #842029; border: 1px solid #f5c2c7; "
+                "border-radius: 4px; padding: 6px 10px; font-size: 12px;"
+            )
 
     def on_solver_error(self, error_msg):
         self.btn_solve.setText("Risolvi Struttura")
@@ -1892,6 +1978,8 @@ class UIStrutture(QMainWindow):
         colore = '#dc3545'
         fu, fv, fw = bool(sup.get('fix_u')), bool(sup.get('fix_v')), bool(sup.get('fix_w'))
 
+        _, _, PoligonoMpl, CerchioMpl = _get_ui_mpl()
+
         def triangolo(P, h, w):
             self.ax.add_patch(PoligonoMpl([P(0, 0), P(h, -w), P(h, w)], closed=True, facecolor='white',
                                           edgecolor=colore, linewidth=2, zorder=3))
@@ -1961,22 +2049,27 @@ class UIStrutture(QMainWindow):
         self.ax.text(x + ux * L * 0.5 + nx * 0.25, y + uy * L * 0.5 + ny * 0.25, etichetta, color=colore, fontsize=9,
                      weight='bold', ha='center', va='center', bbox=dict(boxstyle='round,pad=0.1', fc='white', ec='none', alpha=0.7), zorder=6)
 
+    def _ensure_preview_canvas(self):
+        """Inizializza Matplotlib e FigureCanvasQTAgg solo alla prima struttura da disegnare."""
+        if self.canvas is None:
+            FigureCanvas, Figure, _, _ = _get_ui_mpl()
+            self.fig = Figure(figsize=(5, 4), dpi=100)
+            self.ax = self.fig.add_subplot(111)
+            self.canvas = FigureCanvas(self.fig)
+            self._canvas_layout.addWidget(self.canvas)
+
     def update_live_preview(self):
         """Disegna la struttura sul canvas di Matplotlib in tempo reale."""
+        nodes = {n['id']: (n['x'], n['y']) for n in self.builder_data.get('nodes', [])}
+
+        if not nodes:
+            self.preview_stack.setCurrentWidget(self.preview_placeholder)
+            return
+
+        self._ensure_preview_canvas()
+        self.preview_stack.setCurrentWidget(self._canvas_host)
         self.ax.clear()
         self.ax.set_title("Costruzione in tempo reale", fontsize=12, weight='bold', color='#495057')
-        
-        # Prepariamo un dizionario per trovare rapidamente le coordinate dei nodi
-        nodes = {n['id']: (n['x'], n['y']) for n in self.builder_data.get('nodes', [])}
-        
-        if not nodes:
-            self.ax.text(0.5, 0.5, "Aggiungi un nodo per iniziare", 
-                         ha='center', va='center', color='gray', fontsize=12)
-            self.ax.set_xlim(0, 1)
-            self.ax.set_ylim(0, 1)
-            self.ax.axis('off')
-            self.canvas.draw()
-            return
             
         # Scala di disegno: dipende SOLO dalla struttura (nodi e bielle), non dai carichi. Cosi' frecce, carichi distribuiti,
         # momenti e cedimenti hanno dimensioni proporzionate e aggiungere un carico non cambia lo zoom dell'anteprima.
@@ -2248,6 +2341,7 @@ class UIStrutture(QMainWindow):
         if not file_path: return
             
         try:
+            from PyQt6.QtPrintSupport import QPrinter
             printer = QPrinter(QPrinter.PrinterMode.ScreenResolution)
             printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
             printer.setOutputFileName(file_path)
