@@ -1522,7 +1522,7 @@ def plot_schema_generale(nodi, elementi, supports_n, internal_hinges, point_load
             continue
         x, y = nodi_f[nid]
         ced_parti = []
-        for k_c, sim_c in (('delta_u', 'Δx'), ('delta_v', 'Δy'), ('delta_n', 'Δn'), ('delta_w', 'Δφ')):
+        for k_c, sim_c in (('delta_u', 'Δx'), ('delta_v', 'Δy'), ('delta_n', 'Δn'), ('delta_w', 'Δγ')):
             v_c = float(sup.get(k_c, 0) or 0)
             if abs(v_c) > 1e-12:
                 unit_c = 'rad' if k_c == 'delta_w' else 'm'

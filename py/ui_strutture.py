@@ -479,6 +479,11 @@ class UIStrutture(QMainWindow):
         self._undo = []               # istantanee JSON per "Annulla ultima modifica"
         self._sel = None              # (categoria, indice) dell'elemento selezionato nel riepilogo (evidenziato in anteprima)
         self._run_id = 0              # ogni calcolo scrive in una cartella nuova: niente immagini vecchie dalla cache
+        self._current_json_path = None
+        _cand_json_dir = os.path.abspath(os.path.join(base_dir, "..", "JSON"))
+        if not os.path.isdir(_cand_json_dir):
+            _cand_json_dir = os.path.abspath(os.path.join(base_dir, "JSON"))
+        self._last_json_dir = _cand_json_dir if os.path.isdir(_cand_json_dir) else os.path.expanduser("~")
         
         self.setup_ui()
         self._collega_segnali_proprieta()
@@ -579,20 +584,26 @@ class UIStrutture(QMainWindow):
         self.tab_props = QWidget()
         self.tab_json = QWidget()
         
-        self.tabs.addTab(self.tab_disegna, "✏️ Struttura")
-        self.tabs.addTab(self.tab_props, "🔩 Materiale e sezione")
-        self.tabs.addTab(self.tab_json, "📄 JSON")
+        self.tabs.addTab(self.tab_disegna, "Struttura")
+        self.tabs.addTab(self.tab_props, "Materiale e sezione")
+        self.tabs.addTab(self.tab_json, "Progetto")
         
         self.setup_disegna_tab() # Inizializza la UI (tab Struttura + tab Materiale e sezione)
         
-        # --- TAB JSON ---
+        # --- TAB PROGETTO (JSON) ---
         tab_json_layout = QVBoxLayout(self.tab_json)
+        riga_json_btn = QHBoxLayout()
         self.btn_load = QPushButton("Apri JSON da File")
         self.btn_load.clicked.connect(self.load_json)
+        self.btn_save_json = QPushButton("Salva JSON")
+        self.btn_save_json.setToolTip("Salva il progetto corrente in un file .json nella cartella scelta")
+        self.btn_save_json.clicked.connect(self.save_json)
+        riga_json_btn.addWidget(self.btn_load)
+        riga_json_btn.addWidget(self.btn_save_json)
         self.text_json = QTextEdit()
         self.text_json.setFont(QFont("Courier", 11))
         self.text_json.textChanged.connect(self.aggiorna_anteprima_json)
-        tab_json_layout.addWidget(self.btn_load)
+        tab_json_layout.addLayout(riga_json_btn)
         tab_json_layout.addWidget(self.text_json)
 
         left_layout.addWidget(self.tabs, 1)
@@ -661,7 +672,7 @@ class UIStrutture(QMainWindow):
         self.fig = None
         self.ax = None
         self.canvas = None
-        self.right_tabs.addTab(self.tab_preview, "👀 Anteprima Live")
+        self.right_tabs.addTab(self.tab_preview, "Anteprima Live")
         
         # 🟢 SECONDA SCHEDA: Il Report HTML di Calcolo
         self.tab_report = QWidget()
@@ -671,15 +682,8 @@ class UIStrutture(QMainWindow):
         self.html_view.document().setDefaultStyleSheet(REPORT_CSS)
         self.html_view.setHtml("<h2>Pronto</h2><p>Costruisci la struttura per vederla nell'Anteprima Live.</p>")
         report_layout.addWidget(self.html_view)
-        self.lbl_controlli_solver = QLabel("Nessun calcolo eseguito.")
-        self.lbl_controlli_solver.setWordWrap(True)
-        self.lbl_controlli_solver.setStyleSheet(
-            "background-color: #f8f9fa; color: #495057; border: 1px solid #dee2e6; "
-            "border-radius: 4px; padding: 6px 10px; font-size: 12px;"
-        )
-        report_layout.addWidget(self.lbl_controlli_solver)
         
-        self.right_tabs.addTab(self.tab_report, "📄 Report di Calcolo")
+        self.right_tabs.addTab(self.tab_report, "Report di Calcolo")
         right_layout.addWidget(self.right_tabs)
 
         splitter.addWidget(left_panel)
@@ -922,7 +926,7 @@ class UIStrutture(QMainWindow):
         layout_ced.addWidget(QLabel("Δx (mm):"), 1, 0); layout_ced.addWidget(self.spin_ced_x, 1, 1)
         layout_ced.addWidget(QLabel("Δy (mm, ↑ +):"), 1, 2); layout_ced.addWidget(self.spin_ced_y, 1, 3)
         layout_ced.addWidget(QLabel("Δn (mm, car. inclinato):"), 2, 0); layout_ced.addWidget(self.spin_ced_n, 2, 1)
-        layout_ced.addWidget(QLabel("Δφ (rad, antiorario +):"), 2, 2); layout_ced.addWidget(self.spin_ced_w, 2, 3)
+        layout_ced.addWidget(QLabel("Δγ (rad, antiorario +):"), 2, 2); layout_ced.addWidget(self.spin_ced_w, 2, 3)
         layout_ced.addWidget(btn_add_ced, 3, 3)
         grp_ced.setLayout(layout_ced)
         scroll_layout.addWidget(grp_ced)
@@ -1307,7 +1311,7 @@ class UIStrutture(QMainWindow):
             if s.get("delta_u"): parti.append(f"Δx={g(float(s['delta_u']) * 1000)} mm")
             if s.get("delta_v"): parti.append(f"Δy={g(float(s['delta_v']) * 1000)} mm")
             if s.get("delta_n"): parti.append(f"Δn={g(float(s['delta_n']) * 1000)} mm")
-            if s.get("delta_w"): parti.append(f"Δφ={g(s['delta_w'])} rad")
+            if s.get("delta_w"): parti.append(f"Δγ={g(s['delta_w'])} rad")
             if parti:
                 righe.append((("cedimento", i), f"Cedimento N{s.get('node_id')}: " + ", ".join(parti)))
         for i, p in enumerate(d.get("point_loads", [])):
@@ -1690,7 +1694,7 @@ class UIStrutture(QMainWindow):
         sdx, sdy = self._spin(float(s.get("delta_u", 0)) * 1000), self._spin(float(s.get("delta_v", 0)) * 1000)
         sdn, sdw = self._spin(float(s.get("delta_n", 0)) * 1000), self._spin(float(s.get("delta_w", 0)), -10, 10, 6)
         righe = [("Nodo:", cn), ("Tipo:", ct), ("Angolo / asse biella (°):", sa), ("Lunghezza biella (m, 0 = n.i.):", sl),
-                 ("Cedimento Δx (mm):", sdx), ("Cedimento Δy (mm, ↑ +):", sdy), ("Cedimento Δn (mm):", sdn), ("Rotazione Δφ (rad):", sdw)]
+                 ("Cedimento Δx (mm):", sdx), ("Cedimento Δy (mm, ↑ +):", sdy), ("Cedimento Δn (mm):", sdn), ("Rotazione Δγ (rad):", sdw)]
         if not self._esegui_dialogo(f"Modifica vincolo (N{s['node_id']})", righe):
             return False
         nuovo = costruisci_vincolo(ct.currentIndex(), cn.currentData(), sa.value(), sl.value())
@@ -1853,17 +1857,72 @@ class UIStrutture(QMainWindow):
     # RIMANGONO IDENTICHE A QUELLE DEL TUO CODICE ORIGINALE ---
     
     def load_json(self):
-        file_name, _ = QFileDialog.getOpenFileName(self, "Apri JSON", "", "JSON Files (*.json)")
+        file_name, _ = QFileDialog.getOpenFileName(self, "Apri JSON", self._last_json_dir, "JSON Files (*.json)")
         if file_name:
-            with open(file_name, 'r') as f:
+            with open(file_name, 'r', encoding='utf-8') as f:
                 contenuto = f.read()
             try:
                 dati = json.loads(contenuto)
             except Exception as e:
                 QMessageBox.critical(self, "Errore JSON", f"JSON non valido:\n{e}")
                 return
+            self._current_json_path = file_name
+            self._last_json_dir = os.path.dirname(file_name)
             self.sync_builder_da_json(dati)
             self.tabs.setCurrentWidget(self.tab_disegna)
+
+    def _prepara_dati_json_per_salvataggio(self, consenti_vuoto=True):
+        """Restituisce il dizionario JSON corrente (allineato a editor JSON e pannello proprieta')."""
+        testo_json = self.text_json.toPlainText().strip()
+        if testo_json or not consenti_vuoto:
+            dati = json.loads(self.text_json.toPlainText())
+            if not isinstance(dati, dict):
+                raise ValueError("Il JSON deve essere un oggetto (graffe { }).")
+        else:
+            dati = copy.deepcopy(self.builder_data)
+        da_pannello = self._proprieta_da_ui({})
+        for gruppo in ("material", "section"):
+            dest = dati.setdefault(gruppo, {})
+            for k, v in da_pannello.get(gruppo, {}).items():
+                dest.setdefault(k, v)
+        if "pendolo_section" not in dati:
+            self._pendolo_da_ui(dati)
+        return dati
+
+    def salva_json_su_file(self, file_path):
+        """Scrive il progetto corrente nel percorso `file_path`, aggiungendo `.json` se mancante."""
+        if not file_path:
+            return None
+        if not file_path.lower().endswith(".json"):
+            file_path += ".json"
+        dati = self._prepara_dati_json_per_salvataggio()
+        parent = os.path.dirname(file_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(dati, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        self._current_json_path = file_path
+        self._last_json_dir = parent or self._last_json_dir
+        return file_path
+
+    def save_json(self):
+        """Apre il selettore file/cartella e salva il progetto JSON corrente."""
+        try:
+            self._prepara_dati_json_per_salvataggio()
+        except Exception as e:
+            QMessageBox.critical(self, "Errore JSON", f"JSON non valido:\n{e}")
+            return
+        nome_predefinito = os.path.basename(self._current_json_path) if self._current_json_path else "struttura.json"
+        percorso_init = os.path.join(self._last_json_dir, nome_predefinito)
+        file_path, _ = QFileDialog.getSaveFileName(self, "Salva Progetto JSON", percorso_init, "JSON Files (*.json)")
+        if not file_path:
+            return
+        try:
+            salvato = self.salva_json_su_file(file_path)
+            QMessageBox.information(self, "Successo", f"Progetto salvato in:\n{salvato}")
+        except Exception as e:
+            QMessageBox.critical(self, "Errore", f"Errore durante il salvataggio del JSON:\n{str(e)}")
 
     def sync_builder_da_json(self, dati, riscrivi_json=True):
         """Porta un JSON (da file o scritto a mano) dentro builder_data, pannello, contatori, riepilogo e anteprima,
@@ -2039,23 +2098,11 @@ class UIStrutture(QMainWindow):
                 pass
 
     def run_solver(self):
-        try: 
-            parsed_data = json.loads(self.text_json.toPlainText())
-        except Exception as e: 
+        try:
+            parsed_data = self._prepara_dati_json_per_salvataggio(consenti_vuoto=False)
+        except Exception as e:
             QMessageBox.critical(self, "Errore JSON", f"JSON non valido:\n{e}")
             return
-        # Il JSON e' la fonte di verita' (pannello e JSON sono sincronizzati in entrambi i versi).
-        # Il pannello compila solo le chiavi mancanti: niente piu' sovrascritture silenziose dei valori scritti a mano.
-        if not isinstance(parsed_data, dict):
-            QMessageBox.critical(self, "Errore JSON", "Il JSON deve essere un oggetto (graffe { }).")
-            return
-        da_pannello = self._proprieta_da_ui({})
-        for gruppo in ("material", "section"):
-            dest = parsed_data.setdefault(gruppo, {})
-            for k, v in da_pannello.get(gruppo, {}).items():
-                dest.setdefault(k, v)
-        if "pendolo_section" not in parsed_data:
-            self._pendolo_da_ui(parsed_data)
         
         incognita = self.combo_incognita.currentData()
         if not incognita: 
@@ -2088,46 +2135,15 @@ class UIStrutture(QMainWindow):
         if not img_s1 or not img_diag:
             self.html_view.setHtml(f"<h1>Svolgimento Metodo delle Forze (PLV)</h1>{test_report}")
             self.btn_pdf.setEnabled(False)
-            self.lbl_controlli_solver.setText("Analisi interrotta.")
-            self.lbl_controlli_solver.setStyleSheet(
-                "background-color: #f8d7da; color: #842029; border: 1px solid #f5c2c7; "
-                "border-radius: 4px; padding: 6px 10px; font-size: 12px;"
-            )
             self.right_tabs.setCurrentWidget(self.tab_report)
             return
 
-        run_dir = getattr(self, "run_dir", self.output_dir)
-        url_s1 = QUrl.fromLocalFile(os.path.join(run_dir, img_s1)).toString()
-        url_diag = QUrl.fromLocalFile(os.path.join(run_dir, img_diag)).toString()
-        
         html_finale = f"""
         <h1>Svolgimento Metodo delle Forze (PLV)</h1>
         {test_report}
         """
         self.html_view.setHtml(html_finale)
         self.btn_pdf.setEnabled(True)
-        mod = _get_solutore()
-        ultimi = mod.ULTIMI_RISULTATI if mod is not None else {}
-        res_g = ultimi.get("equilibrio_globale", 0.0)
-        res_n = ultimi.get("equilibrio_nodi", (0.0, 0.0))
-        ko_n = ultimi.get("nodi_non_in_equilibrio", [])
-        if not ko_n and res_g < 1e-6:
-            self.lbl_controlli_solver.setText(
-                f"✓ Controlli numerici (solo GUI, esclusi dal PDF): "
-                f"equilibrio globale res = {res_g:.1e} | equilibrio nodi max forze = {res_n[0]:.1e} N, momenti = {res_n[1]:.1e} N·m."
-            )
-            self.lbl_controlli_solver.setStyleSheet(
-                "background-color: #d1e7dd; color: #0f5132; border: 1px solid #badbcc; "
-                "border-radius: 4px; padding: 6px 10px; font-size: 12px;"
-            )
-        else:
-            self.lbl_controlli_solver.setText(
-                f"✘ Attenzione: residuo equilibrio globale = {res_g:.2e}, nodi non equilibrati = {ko_n}"
-            )
-            self.lbl_controlli_solver.setStyleSheet(
-                "background-color: #f8d7da; color: #842029; border: 1px solid #f5c2c7; "
-                "border-radius: 4px; padding: 6px 10px; font-size: 12px;"
-            )
 
     def on_solver_error(self, error_msg):
         self.btn_solve.setText("Risolvi Struttura")
@@ -2514,13 +2530,13 @@ class UIStrutture(QMainWindow):
                                  color=color_ced, fontsize=9, ha='center', va='center', weight='bold',
                                  bbox=dict(boxstyle='round,pad=0.1', fc='white', ec='none', alpha=0.7))
                                  
-                # Rotazione Imposta (Δφ)
+                # Rotazione Imposta (Δγ)
                 if dw != 0:
                     rad_curve = 0.4 if dw > 0 else -0.4
                     self.ax.annotate('', xy=(x - 0.4, y + 0.4), xytext=(x + 0.4, y + 0.4),
                                      arrowprops=dict(arrowstyle="->", color=color_ced, lw=2.5, linestyle='--',
                                                      connectionstyle=f"arc3,rad={rad_curve}"), zorder=6)
-                    self.ax.text(x, y + 0.7, f"Δφ={dw:g}rad", 
+                    self.ax.text(x, y + 0.7, f"Δγ={dw:g}rad", 
                                  color=color_ced, fontsize=9, ha='center', weight='bold',
                                  bbox=dict(boxstyle='round,pad=0.1', fc='white', ec=color_ced, alpha=0.8))
 
