@@ -8,6 +8,7 @@ Il programma combina la potenza del calcolo algebrico esatto di **SymPy** con la
 
 ## 📑 Indice
 
+- [🪟 Versione Windows 11 (Come accedervi)](#-versione-windows-11-come-accedervi)
 - [Caratteristiche Principali](#-caratteristiche-principali)
 - [Architettura del Progetto](#-architettura-del-progetto)
 - [Prerequisiti e Installazione](#-prerequisiti-e-installazione)
@@ -18,6 +19,26 @@ Il programma combina la potenza del calcolo algebrico esatto di **SymPy** con la
 - [Flusso di Risoluzione (Workflow PLV)](#-flusso-di-risoluzione-workflow-plv)
 - [Compilazione Standalone (PyInstaller)](#-compilazione-standalone-pyinstaller)
 - [Esempi Inclusi](#-esempi-inclusi)
+
+---
+
+## 🪟 Versione Windows 11 (Come accedervi)
+
+È disponibile un branch dedicato (**`Versione-Windows-11`**) con struttura e aspetto identici al programma originale, ottimizzato specificamente per **Windows 11** (launcher 1-clic `Avvia_Windows11.bat`, script `.exe` PyInstaller, icona `.ico`, supporto a virgola `,` e punto `.` nei campi numerici, isolamento dal Dark Mode di sistema, DPI/scaling 125%–175% e gestione sicura dei percorsi con spazi/accenti).
+
+### Come scaricarla o attivarla
+- **Da GitHub (senza usare comandi Git):**
+  1. In alto a sinistra sopra la lista dei file di questa pagina, clicca sul menu a tendina **`main`** e seleziona **`Versione-Windows-11`** *(oppure apri direttamente `https://github.com/francesco-barbato/PLV-Solver/tree/Versione-Windows-11`)*.
+  2. Clicca su **`<> Code` → `Download ZIP`**, estrai l'archivio e avvia con doppio clic **`Avvia_Windows11.bat`**.
+  3. Leggi la guida dedicata su quel branch: **`GUIDA_WINDOWS_11.md`** (`https://github.com/francesco-barbato/PLV-Solver/blob/Versione-Windows-11/GUIDA_WINDOWS_11.md`).
+- **Da riga di comando (Git):**
+  ```bash
+  git clone -b Versione-Windows-11 https://github.com/francesco-barbato/PLV-Solver.git
+  # oppure, se hai già clonato il repository:
+  git fetch origin && git checkout Versione-Windows-11
+  ```
+
+> Per una guida passo-passo all'esame (installazione, inserimento e trascrizione del report) pensata per chi non conosce GitHub né la programmazione, vedi anche **[GUIDA_ESAME.md](GUIDA_ESAME.md)**.
 
 ---
 
@@ -79,6 +100,7 @@ Il programma combina la potenza del calcolo algebrico esatto di **SymPy** con la
 SolutorePLV/
 │
 ├── README.md               # Documentazione ufficiale del progetto
+├── GUIDA_ESAME.md          # Guida completa all'esame per principianti
 ├── .gitignore              # Configurazione esclusioni Git
 ├── .vscode/
 │   └── settings.json       # Configurazioni dell'ambiente di sviluppo
