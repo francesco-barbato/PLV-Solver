@@ -1,5 +1,8 @@
 # Guida Completa all'Esame: Come Scaricare, Usare e Copiare i Dati del Solutore PLV
 
+> [!TIP]
+> **Stai usando Windows 11?** Su questo branch è disponibile la guida dedicata passo-passo per Windows 11 (avvio con un clic tramite `Avvia_Windows11.bat` o compilazione `.exe`, gestione virgola/punto sul tastierino e Theme/HiDPI): apri [GUIDA_WINDOWS_11.md](GUIDA_WINDOWS_11.md).
+
 > Questa guida è pensata per chi **non conosce nulla di GitHub, di programmazione né di Scienza delle Costruzioni**. Seguendo i passaggi nell'ordine indicato riuscirai a installare il programma, inserire correttamente il disegno dell'esame senza errori di unità di misura o segni, e trascrivere passo passo i conti sul foglio.
 
 ---

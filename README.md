@@ -8,6 +8,7 @@ Il programma combina la potenza del calcolo algebrico esatto di **SymPy** con la
 
 ## 📑 Indice
 
+- [🪟 Come accedere alla Versione Windows 11](#-come-accedere-alla-versione-windows-11)
 - [Caratteristiche Principali](#-caratteristiche-principali)
 - [Architettura del Progetto](#-architettura-del-progetto)
 - [Prerequisiti e Installazione](#-prerequisiti-e-installazione)
@@ -18,6 +19,32 @@ Il programma combina la potenza del calcolo algebrico esatto di **SymPy** con la
 - [Flusso di Risoluzione (Workflow PLV)](#-flusso-di-risoluzione-workflow-plv)
 - [Compilazione Standalone (PyInstaller)](#-compilazione-standalone-pyinstaller)
 - [Esempi Inclusi](#-esempi-inclusi)
+
+---
+
+## 🪟 Come accedere alla Versione Windows 11
+
+Questo branch (**`Versione-Windows-11`**) mantiene esattamente la stessa struttura e lo stesso aspetto dell'applicazione, aggiungendo compatibilità completa e ottimizzazioni dedicate per **Windows 11** (isolamento dal Dark Mode di sistema, DPI/scaling 125%–175%, font ricchi di simboli matematici, supporto sia a `.` sia a `,` del tastierino numerico italiano e notazione scientifica nei campi numerici, gestione sicura dei percorsi con spazi/accenti e cartelle temporanee in `%TEMP%`).
+
+### 1. Da GitHub (senza usare comandi Git)
+1. Apri la repository: `https://github.com/francesco-barbato/PLV-Solver`.
+2. In alto a sinistra sopra l'elenco dei file, apri il menu a tendina dei branch (**`main`**) e seleziona **`Versione-Windows-11`** *(oppure vai direttamente su `https://github.com/francesco-barbato/PLV-Solver/tree/Versione-Windows-11`)*.
+3. Clicca su **`<> Code` → `Download ZIP`** ed estrai l'archivio in una cartella sul PC.
+4. Fai doppio clic su **`Avvia_Windows11.bat`** (la prima volta installa automaticamente eventuali librerie mancanti se Python 3.9+ è già installato).
+
+### 2. Da riga di comando (Git)
+```bash
+# Clonazione diretta del branch Windows 11:
+git clone -b Versione-Windows-11 https://github.com/francesco-barbato/PLV-Solver.git
+
+# Oppure, se hai già clonato il repository in locale:
+git fetch origin
+git checkout Versione-Windows-11
+```
+
+### 3. Guide passo-passo incluse
+- **[GUIDA_WINDOWS_11.md](GUIDA_WINDOWS_11.md)** — Guida dettagliata all'esame specifica per Windows 11 (pensata anche per chi non conosce GitHub, programmazione o Scienza delle Costruzioni).
+- **[GUIDA_ESAME.md](GUIDA_ESAME.md)** — Guida generale all'utilizzo e alla trascrizione del report sul foglio d'esame.
 
 ---
 
@@ -78,12 +105,15 @@ Il programma combina la potenza del calcolo algebrico esatto di **SymPy** con la
 ```
 SolutorePLV/
 │
-├── README.md               # Documentazione ufficiale del progetto
-├── .gitignore              # Configurazione esclusioni Git
+├── README.md                    # Documentazione ufficiale del progetto
+├── GUIDA_WINDOWS_11.md          # Guida completa passo-passo per utenti Windows 11
+├── GUIDA_ESAME.md               # Guida generale all'esame
+├── Avvia_Windows11.bat          # Avvio rapido 1-clic su Windows 11
+├── .gitignore                   # Configurazione esclusioni Git
 ├── .vscode/
-│   └── settings.json       # Configurazioni dell'ambiente di sviluppo
+│   └── settings.json            # Configurazioni dell'ambiente di sviluppo
 │
-├── JSON/                   # Casi studio ed esercizi d'esame reali (formato JSON)
+├── JSON/                        # Casi studio ed esercizi d'esame reali (formato JSON)
 │   ├── 060921.json
 │   ├── 140722.json
 │   ├── 150323.json
@@ -93,17 +123,20 @@ SolutorePLV/
 │   ├── 200921.json
 │   ├── 240621.json
 │   ├── 261021.json
+│   ├── 261026.json
 │   ├── 270721.json
 │   └── 280223.json
 │
-└── py/                     # Codice sorgente Python e risorse
-    ├── ui_strutture.py      # Interfaccia Grafica Desktop (PyQt6 + Matplotlib Canvas)
-    ├── solutore_plv.py      # Motore computazionale, algebra simbolica e PLV (SymPy)
-    ├── SolutorePLV.spec     # Specfile per la creazione di eseguibili standalone con PyInstaller
-    ├── ui_strutture.spec    # Specfile alternativo per PyInstaller
-    ├── icona.icns          # Icona dell'applicazione per macOS
-    ├── icona.jpg           # Risorsa grafica per l'interfaccia
-    └── temp_output/        # Cartella di output generata a runtime per i grafici e le sessioni
+└── py/                          # Codice sorgente Python e risorse
+    ├── ui_strutture.py          # Interfaccia Grafica Desktop (PyQt6 + Matplotlib Canvas)
+    ├── solutore_plv.py          # Motore computazionale, algebra simbolica e PLV (SymPy)
+    ├── SolutorePLV_Win11.spec   # Specfile PyInstaller per Windows 11 (.exe)
+    ├── Crea_EXE_Windows11.bat   # Script di compilazione automatica .exe su Windows 11
+    ├── SolutorePLV.spec         # Specfile per la creazione di app macOS con PyInstaller
+    ├── ui_strutture.spec        # Specfile alternativo per PyInstaller
+    ├── icona.ico                # Icona dell'applicazione per Windows 11
+    ├── icona.icns               # Icona dell'applicazione per macOS
+    └── icona.jpg                # Risorsa grafica per l'interfaccia
 ```
 
 ---
@@ -286,7 +319,18 @@ I file di input nella cartella `JSON/` definiscono la topologia e le azioni dell
 
 ## 📦 Compilazione Standalone (PyInstaller)
 
-È possibile generare un pacchetto eseguibile distribuibile (ad esempio un file `.app` su macOS o un `.exe` su Windows) utilizzando **PyInstaller** e la configurazione inclusa in `SolutorePLV.spec`:
+### Su Windows 11
+È incluso lo script automatico **`py\Crea_EXE_Windows11.bat`** (basato su `py/SolutorePLV_Win11.spec`), oppure puoi eseguire da Prompt dei comandi nella cartella `py/`:
+
+```bat
+pip install pyinstaller
+pyinstaller --noconfirm SolutorePLV_Win11.spec
+```
+
+L'eseguibile standalone verrà generato in `py\dist\SolutorePLV\SolutorePLV.exe`.
+
+### Su macOS
+È possibile generare il pacchetto `.app` utilizzando **PyInstaller** e la configurazione inclusa in `SolutorePLV.spec`:
 
 ```bash
 # 1. Installa PyInstaller
