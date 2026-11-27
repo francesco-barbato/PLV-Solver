@@ -1,11 +1,48 @@
 import os
+import sys
 import json
 import math
 import struct
 import threading
+from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 import sympy as sp
 import numpy as np
+
+_MONO_CSS = 'Consolas, "Courier New", Courier, monospace' if sys.platform == "win32" else '"Courier New", Courier, monospace'
+
+def _to_file_uri(img_path):
+    """Converte un percorso locale (anche Windows con spazi, accenti o drive C:\\) in URI file:// valido."""
+    if not img_path:
+        return ""
+    s = str(img_path)
+    if s.startswith("file://"):
+        return s
+    return Path(os.path.abspath(s)).as_uri()
+
+def _risolvi_percorso_img(img_ref):
+    """Restituisce il percorso locale OS da path o URI file://."""
+    s = str(img_ref or "")
+    if s.startswith("file://"):
+        parsed = urlparse(s)
+        path = url2pathname(parsed.path)
+        if parsed.netloc:
+            return f"//{parsed.netloc}{path}" if os.name != "nt" else f"\\\\{parsed.netloc}{path}"
+        return path
+    return s if os.path.isabs(s) else ("/" + s.lstrip("/"))
+
+def _salva_figura_png(fig, out_dir, filename, **save_kw):
+    """Salva la figura Matplotlib e la chiude sempre in sicurezza; restituisce il path normalizzato."""
+    _plt, _ = _get_mpl()
+    filepath = os.path.abspath(os.path.join(out_dir, filename))
+    try:
+        save_kw.setdefault("bbox_inches", "tight")
+        fig.savefig(filepath, **save_kw)
+    finally:
+        _plt.close(fig)
+    return filepath.replace("\\", "/")
 
 plt = None
 patches = None
@@ -402,7 +439,7 @@ def _eq_table_html(*elements):
     )
     return (
         "<table class='eq-table' cellpadding='0' cellspacing='0' "
-        "style='margin:2px 0; border:none; width:auto; background:transparent; font-family:\"Courier New\", Courier, monospace; font-size:14px; font-weight:bold; color:#0b5ed7;'>"
+        f"style='margin:2px 0; border:none; width:auto; background:transparent; font-family:{_MONO_CSS}; font-size:14px; font-weight:bold; color:#0b5ed7;'>"
         f"<tr>{cells}</tr></table>"
     )
 
@@ -885,12 +922,7 @@ def plot_sistema_S0(nodi, elementi, reazioni, valori_calcolati, filename, out_di
     ax.margins(x=0.12, y=0.22)
     ax.set_aspect('equal')
     ax.axis('off')
-    filepath = os.path.abspath(os.path.join(out_dir, filename))
-    try:
-        plt.savefig(filepath, bbox_inches='tight', pad_inches=0.16, dpi=140)
-    finally:
-        plt.close(fig)
-    return filepath.replace("\\", "/").lstrip("/")
+    return _salva_figura_png(fig, out_dir, filename, pad_inches=0.16, dpi=140)
 
 def plot_diagrammi_singola_asta(L, expr_M, expr_T, expr_N, nome_asta, filename, out_dir, nome_sistema="S₀"):
     """Genera i 3 grafici (M, T, N) affiancati per una singola asta (Versione Ant-Crash Termico)."""
@@ -965,12 +997,10 @@ def plot_diagrammi_singola_asta(L, expr_M, expr_T, expr_N, nome_asta, filename, 
 
     try:
         plt.tight_layout()
-        filepath = os.path.abspath(os.path.join(out_dir, filename))
-        plt.savefig(filepath, bbox_inches='tight', pad_inches=0.15)
-    finally:
-        plt.close(fig) # Garantisce la chiusura in memoria anche in caso di errore
-        
-    return filepath.replace("\\", "/").lstrip("/")
+        return _salva_figura_png(fig, out_dir, filename, pad_inches=0.15)
+    except Exception:
+        plt.close(fig)
+        raise
 
 def _dist_punto_segmento(px, py, x1, y1, x2, y2):
     """Distanza minima del punto (px, py) dal segmento (x1,y1)-(x2,y2)."""
@@ -1254,18 +1284,17 @@ def plot_momenti_S0_S1(nodi, elementi, M0_dict, M1_dict, grado_iperstaticita, ou
     else:
         fig, ax = plt.subplots(1, 1, figsize=(7.5, 5.0), dpi=130)
         _disegna_diagramma_su_ax(ax, nodi_f, elementi, M0_dict, "Momento Flettente M₀(s) [N·m] (Sistema Isostatico)\n(lato fibre tese)", "crimson")
-    filepath = os.path.abspath(os.path.join(out_dir, filename))
     try:
         plt.tight_layout()
-        plt.savefig(filepath, bbox_inches='tight', pad_inches=0.16, dpi=130)
-    finally:
+        return _salva_figura_png(fig, out_dir, filename, pad_inches=0.16, dpi=130)
+    except Exception:
         plt.close(fig)
-    return filepath.replace("\\", "/").lstrip("/")
+        raise
 
 def _scala_dim_png(img_path, max_w, max_h=None):
     """Calcola attributi width/height proporzionali leggendo l'header PNG per stare nella pagina."""
     try:
-        p_abs = img_path if os.path.isabs(img_path) else ("/" + img_path.lstrip("/"))
+        p_abs = _risolvi_percorso_img(img_path)
         with open(p_abs, "rb") as fp:
             hdr = fp.read(24)
         if len(hdr) >= 24 and hdr[:8] == b'\x89PNG\r\n\x1a\n':
@@ -1292,10 +1321,11 @@ def _img_block_html(title_html, img_path, max_w, max_h=None, page_break_before=F
     pb = " page-break-before: always;" if page_break_before else ""
     w_o, h_o = _scala_dim_png(img_path, max_w, max_h)
     dim_attr = f"width='{w_o}' height='{h_o}'" if h_o else f"width='{w_o}'"
+    uri = _to_file_uri(img_path)
     return (
         f"<div class='keep-together' align='center' style='text-align:center; page-break-inside: avoid; break-inside: avoid;{pb} margin: 4px 0 8px 0;'>"
         f"<div class='keep-next' align='center' style='text-align:center; page-break-after: avoid; break-after: avoid; margin-bottom: 4px; line-height: 1.2;'>{title_html}</div>"
-        f"<div align='center' style='text-align:center; line-height: 1.0; font-size: 1px; margin: 0; padding: 0;'><img src='file:///{img_path}' {dim_attr}></div>"
+        f"<div align='center' style='text-align:center; line-height: 1.0; font-size: 1px; margin: 0; padding: 0;'><img src='{uri}' {dim_attr}></div>"
         "</div>"
     )
 
@@ -1308,11 +1338,10 @@ def _salva_trio_diagrammi(nodi_f, elementi, M_dict, T_dict, N_dict, tit_M, tit_T
         _disegna_diagramma_su_ax(axes[1], nodi_f, elementi, T_dict, tit_T, "forestgreen")
         _disegna_diagramma_su_ax(axes[2], nodi_f, elementi, N_dict, tit_N, "dodgerblue")
         fig.tight_layout(h_pad=1.0)
-        filepath = os.path.abspath(os.path.join(out_dir, filename))
-        fig.savefig(filepath, bbox_inches='tight', pad_inches=0.16, dpi=130)
-    finally:
+        return _salva_figura_png(fig, out_dir, filename, pad_inches=0.16, dpi=130)
+    except Exception:
         plt.close(fig)
-    return filepath.replace("\\", "/").lstrip("/")
+        raise
 
 def plot_schema_generale(nodi, elementi, supports_n, internal_hinges, point_loads, element_loads, thermal_loads, out_dir, filename="plv_S0_S1.png"):
     """Disegna lo schema reale completo della struttura (aste, nodi, vincoli, cerniere, carichi)."""
@@ -1558,10 +1587,7 @@ def plot_schema_generale(nodi, elementi, supports_n, internal_hinges, point_load
     ax.margins(x=0.12, y=0.22)
     ax.set_aspect('equal')
     ax.axis('off')
-    filepath = os.path.abspath(os.path.join(out_dir, filename))
-    plt.savefig(filepath, bbox_inches='tight', pad_inches=0.16, dpi=140)
-    plt.close(fig)
-    return filepath.replace("\\", "/").lstrip("/")
+    return _salva_figura_png(fig, out_dir, filename, pad_inches=0.16, dpi=140)
 
 def plot_schema_libero_asta(L, n1_id, n2_id, expr_M, expr_T, expr_N, nome_asta, filename, out_dir, dati_json):
     """Genera lo schema di corpo libero completo con vettori (N,T,M) e carichi esterni."""
@@ -1655,9 +1681,7 @@ def plot_schema_libero_asta(L, n1_id, n2_id, expr_M, expr_T, expr_N, nome_asta, 
     ax.margins(x=0.12, y=0.22)
     ax.axis('off')
     
-    filepath = os.path.join(out_dir, filename)
-    plt.savefig(filepath, bbox_inches='tight', pad_inches=0.15)
-    plt.close()
+    return _salva_figura_png(fig, out_dir, filename, pad_inches=0.15)
     return filepath.replace("\\", "/").lstrip("/")
 
 def _coeff_poly(expr, s_sym):
@@ -2162,7 +2186,7 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
     report.append(f"<p>Telaio piano composto da <b>{num_aste} aste</b> e <b>{num_nodi} nodi</b>{cern_pos_txt}.</p>")
     _w_gen, _h_gen = _scala_dim_png(img_schema_gen, 580, 320)
     _dim_gen = f"width='{_w_gen}' height='{_h_gen}'" if _h_gen else f"width='{_w_gen}'"
-    report.append(f"<div style='text-align: center; line-height: 1.0; font-size: 1px; margin: 6px 0 10px 0;'><img src='file:///{img_schema_gen}' {_dim_gen}></div>")
+    report.append(f"<div style='text-align: center; line-height: 1.0; font-size: 1px; margin: 6px 0 10px 0;'><img src='{_to_file_uri(img_schema_gen)}' {_dim_gen}></div>")
 
     report.append("<div style='page-break-inside: avoid;'><p><b>Analisi dei vincoli esterni:</b></p><ul>")
     for det in dettagli_vincoli:
@@ -3371,7 +3395,7 @@ def _risolvi_struttura_plv_core(dati_json, out_dir, incognita):
             )
             return (
                 "<table class='eq-table' cellpadding='0' cellspacing='0' "
-                "style='margin-bottom: 10px; border:none; width:auto; background:transparent; font-family:\"Courier New\", Courier, monospace; font-size: 15px; color: #000000;'>"
+                f"style='margin-bottom: 10px; border:none; width:auto; background:transparent; font-family:{_MONO_CSS}; font-size: 15px; color: #000000;'>"
                 f"<tr>{cells}</tr></table>"
             )
 

@@ -1,16 +1,40 @@
 import sys
 import os
 import json
+import tempfile
 import traceback
 
-# --- DEFINIZIONE DELLA CARTELLA BASE SICURA ---
+# --- SICUREZZA I/O CONSOLE SU WINDOWS GUI (pythonw / PyInstaller console=False) ---
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+elif hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")
+elif hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+# --- DEFINIZIONE DELLA CARTELLA BASE SICURA (ANCHE PYINSTALLER _MEIPASS) ---
 if getattr(sys, 'frozen', False):
     base_dir = os.path.dirname(sys.executable)
 else:
     base_dir = os.path.dirname(os.path.abspath(__file__))
 
-# Imposta la cartella di lavoro corrente
-os.chdir(base_dir)
+_MEIPASS_DIR = getattr(sys, '_MEIPASS', None)
+for _p in (_MEIPASS_DIR, base_dir, os.path.dirname(os.path.abspath(__file__))):
+    if _p and os.path.isdir(_p) and _p not in sys.path:
+        sys.path.insert(0, _p)
+
+try:
+    os.chdir(base_dir)
+except OSError:
+    pass
 
 # --- COMPATIBILITÀ PYTHON 3.9 PER 'Self' ---
 import typing
@@ -29,15 +53,146 @@ import shutil
 import threading
 import time
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl, QMarginsF, QTimer
-from PyQt6.QtGui import QFont, QIcon, QPageLayout, QPageSize
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl, QMarginsF, QTimer, QLocale
+from PyQt6.QtGui import QFont, QIcon, QPageLayout, QPageSize, QValidator, QPalette, QColor
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QTextEdit, QLabel, QFileDialog, QMessageBox,
     QComboBox, QSplitter, QTabWidget, QTextBrowser, QStackedWidget,
-    QGroupBox, QFormLayout, QDoubleSpinBox, QListWidget, QScrollArea, QGridLayout, QLineEdit,
+    QGroupBox, QFormLayout, QDoubleSpinBox as _QtDoubleSpinBox, QListWidget, QScrollArea, QGridLayout, QLineEdit,
     QDialog, QDialogButtonBox, QListWidgetItem, QToolButton, QFrame, QSizePolicy
 )
+
+_RE_SPIN_SCI = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d*)?$")
+_RE_SPIN_PARTIAL = re.compile(r"^[+-]?(?:\d*\.?\d*(?:[eE][+-]?\d*)?)?$")
+
+
+class QDoubleSpinBox(_QtDoubleSpinBox):
+    """SpinBox numerico coerente su Windows/Mac: accetta sia '.' sia ',' (tastierino IT) e notazione scientifica."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        loc = QLocale.c()
+        loc.setNumberOptions(QLocale.NumberOption.OmitGroupSeparator)
+        self.setLocale(loc)
+
+    def validate(self, text, pos):
+        if "," in text:
+            text = text.replace(",", ".")
+        sv = self.specialValueText()
+        if sv and text == sv:
+            return (QValidator.State.Acceptable, text, pos)
+        t = text.strip()
+        if not t or t in ("+", "-", ".", "+.", "-."):
+            return (QValidator.State.Intermediate, text, pos)
+        if "e" in t.lower():
+            if not _RE_SPIN_PARTIAL.match(t):
+                return (QValidator.State.Invalid, text, pos)
+            if not _RE_SPIN_SCI.match(t) or t[-1].lower() in ("e", "+", "-"):
+                return (QValidator.State.Intermediate, text, pos)
+            try:
+                v = float(t)
+            except ValueError:
+                return (QValidator.State.Invalid, text, pos)
+            if math.isfinite(v) and self.minimum() <= v <= self.maximum():
+                return (QValidator.State.Acceptable, text, pos)
+            return (QValidator.State.Intermediate, text, pos)
+        return super().validate(text, pos)
+
+    def valueFromText(self, text):
+        t = text.strip().replace(",", ".")
+        if "e" in t.lower():
+            try:
+                v = float(t)
+                if math.isfinite(v):
+                    return min(self.maximum(), max(self.minimum(), v))
+            except ValueError:
+                pass
+        return super().valueFromText(t)
+
+    def fixup(self, text):
+        t = text.strip().replace(",", ".")
+        if "e" in t.lower():
+            try:
+                v = float(t)
+                if math.isfinite(v):
+                    return self.textFromValue(min(self.maximum(), max(self.minimum(), v)))
+            except ValueError:
+                pass
+        return super().fixup(t)
+
+
+def _risorsa_app(nome_file):
+    """Cerca una risorsa locale (icona, ecc.) in base_dir, _MEIPASS o directory dello script."""
+    candidati = []
+    for rad in (base_dir, _MEIPASS_DIR, os.path.dirname(os.path.abspath(__file__))):
+        if rad:
+            candidati.append(os.path.join(rad, nome_file))
+    for p in candidati:
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def _carica_icona_app():
+    """Carica QIcon adatta al sistema operativo (.ico su Windows 11, fallback .jpg)."""
+    ordine = ("icona.ico", "icona.jpg") if sys.platform == "win32" else ("icona.jpg", "icona.ico")
+    for nome in ordine:
+        p = _risorsa_app(nome)
+        if p:
+            ic = QIcon(p)
+            if not ic.isNull():
+                return ic
+    return QIcon()
+
+
+def _cartella_temp_output():
+    """Directory scrivibile per i file temporanei (evita Program Files / blocchi OneDrive su Windows 11)."""
+    cand = os.path.join(tempfile.gettempdir(), "SolutorePLV_temp")
+    try:
+        os.makedirs(cand, exist_ok=True)
+        return os.path.abspath(cand)
+    except OSError:
+        fallback = os.path.abspath("temp_output")
+        os.makedirs(fallback, exist_ok=True)
+        return fallback
+
+
+def _imposta_appid_windows():
+    """Imposta AppUserModelID prima di QApplication per mostrare l'icona corretta nella taskbar di Windows 11."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("SolutorePLV.Strutture.Win11")
+    except Exception:
+        pass
+
+
+def _configura_ambiente_windows(app):
+    """Isola l'app dal Dark Mode nativo su Windows 11 mantenendo aspetto identico e font completi di simboli."""
+    if sys.platform != "win32":
+        return
+    QFont.insertSubstitutions("Arial", ["Segoe UI", "DejaVu Sans", "Segoe UI Symbol", "Cambria Math"])
+    QFont.insertSubstitutions("Courier New", ["Consolas", "DejaVu Sans Mono", "Segoe UI Symbol"])
+    QFont.insertSubstitutions("Courier", ["Consolas", "Courier New", "DejaVu Sans Mono"])
+    app.setStyle("Fusion")
+    pal = QPalette()
+    pal.setColor(QPalette.ColorRole.Window, QColor("#f8f9fa"))
+    pal.setColor(QPalette.ColorRole.WindowText, QColor("#000000"))
+    pal.setColor(QPalette.ColorRole.Base, QColor("#ffffff"))
+    pal.setColor(QPalette.ColorRole.AlternateBase, QColor("#f1f3f5"))
+    pal.setColor(QPalette.ColorRole.ToolTipBase, QColor("#ffffe1"))
+    pal.setColor(QPalette.ColorRole.ToolTipText, QColor("#000000"))
+    pal.setColor(QPalette.ColorRole.Text, QColor("#000000"))
+    pal.setColor(QPalette.ColorRole.Button, QColor("#e9ecef"))
+    pal.setColor(QPalette.ColorRole.ButtonText, QColor("#000000"))
+    pal.setColor(QPalette.ColorRole.Highlight, QColor("#0d6efd"))
+    pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
+    pal.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, QColor("#6c757d"))
+    pal.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, QColor("#6c757d"))
+    pal.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText, QColor("#6c757d"))
+    app.setPalette(pal)
 
 _IMPORT_LOCK = threading.Lock()
 _SOLUTORE_MOD = None
@@ -76,19 +231,22 @@ def _get_ui_mpl():
         return _UI_MPL
 
 
-REPORT_CSS = """
-    body { font-family: Arial, sans-serif; font-size: 14px; color: #000000; background-color: #ffffff; line-height: 1.45; }
-    h1 { color: #0d6efd; border-bottom: 2px solid #0d6efd; padding-bottom: 5px; font-size: 20px; break-after: avoid; page-break-after: avoid; }
-    h2 { color: #dc3545; background-color: #f8d7da; padding: 8px; border-left: 4px solid #dc3545; margin-top: 18px; font-size: 16px; break-after: avoid; page-break-after: avoid; }
-    h3, h4, .keep-next { break-after: avoid; page-break-after: avoid; }
-    .keep-together, table.keep-table { break-inside: avoid; page-break-inside: avoid; }
-    thead { display: table-header-group; }
-    table { width: 100%; border-collapse: collapse; margin-top: 8px; margin-bottom: 12px; background-color: #ffffff; }
-    th { background-color: #e9ecef; border: 1px solid #ced4da; padding: 7px 8px; font-weight: bold; color: #000000; font-size: 13px; }
-    td { border: 1px solid #ced4da; padding: 6px 8px; text-align: center; color: #000000; font-size: 13px; }
-    table.compact-table th, table.compact-table td { padding: 4px 6px; font-size: 12px; }
-    .eq-table, .eq-table td, .frac-table, .frac-table td { border: none; width: auto; background: transparent; padding: 0 3px; }
-    .formula { font-family: 'Courier New', Courier, monospace; font-size: 13.5px; font-weight: bold; color: #0b5ed7; background-color: #f1f3f5; padding: 2px 6px; border-radius: 4px; border: 1px solid #dee2e6; }
+_REPORT_BODY_FONT = "'Segoe UI', Arial, sans-serif" if sys.platform == "win32" else "Arial, sans-serif"
+_REPORT_MONO_FONT = "Consolas, 'Courier New', monospace" if sys.platform == "win32" else "'Courier New', Courier, monospace"
+
+REPORT_CSS = f"""
+    body {{ font-family: {_REPORT_BODY_FONT}; font-size: 14px; color: #000000; background-color: #ffffff; line-height: 1.45; }}
+    h1 {{ color: #0d6efd; border-bottom: 2px solid #0d6efd; padding-bottom: 5px; font-size: 20px; break-after: avoid; page-break-after: avoid; }}
+    h2 {{ color: #dc3545; background-color: #f8d7da; padding: 8px; border-left: 4px solid #dc3545; margin-top: 18px; font-size: 16px; break-after: avoid; page-break-after: avoid; }}
+    h3, h4, .keep-next {{ break-after: avoid; page-break-after: avoid; }}
+    .keep-together, table.keep-table {{ break-inside: avoid; page-break-inside: avoid; }}
+    thead {{ display: table-header-group; }}
+    table {{ width: 100%; border-collapse: collapse; margin-top: 8px; margin-bottom: 12px; background-color: #ffffff; }}
+    th {{ background-color: #e9ecef; border: 1px solid #ced4da; padding: 7px 8px; font-weight: bold; color: #000000; font-size: 13px; }}
+    td {{ border: 1px solid #ced4da; padding: 6px 8px; text-align: center; color: #000000; font-size: 13px; }}
+    table.compact-table th, table.compact-table td {{ padding: 4px 6px; font-size: 12px; }}
+    .eq-table, .eq-table td, .frac-table, .frac-table td {{ border: none; width: auto; background: transparent; padding: 0 3px; }}
+    .formula {{ font-family: {_REPORT_MONO_FONT}; font-size: 13.5px; font-weight: bold; color: #0b5ed7; background-color: #f1f3f5; padding: 2px 6px; border-radius: 4px; border: 1px solid #dee2e6; }}
 """
 
 
@@ -453,14 +611,21 @@ class UIStrutture(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Risolutore PLV - Metodo delle forze")
-        # Finestra dimensionata sullo schermo (92% x 90%), centrata: il pannello dati ha subito spazio e la figura resta visibile
-        _geo = QApplication.primaryScreen().availableGeometry()
+        _icon = _carica_icona_app()
+        if not _icon.isNull():
+            self.setWindowIcon(_icon)
+        # Finestra dimensionata sullo schermo (92% x 90%), centrata e sicura anche su portatili Windows con scaling 125%-175%
+        _scr = QApplication.primaryScreen()
+        _geo = _scr.availableGeometry() if _scr is not None else self.geometry()
         _w, _h = int(_geo.width() * 0.92), int(_geo.height() * 0.90)
         self.resize(_w, _h)
         self.move(_geo.x() + (_geo.width() - _w) // 2, _geo.y() + (_geo.height() - _h) // 2)
-        self.setMinimumSize(1000, 600)
-        self.output_dir = os.path.abspath("temp_output")
-        os.makedirs(self.output_dir, exist_ok=True)
+        self._min_left_w = min(560, max(440, int(_geo.width() * 0.52))) if _geo.width() > 0 else 560
+        self._min_right_w = min(380, max(300, int(_geo.width() * 0.34))) if _geo.width() > 0 else 380
+        _min_w = min(1000, max(760, _geo.width() - 16)) if _geo.width() > 0 else 1000
+        _min_h = min(600, max(440, _geo.height() - 16)) if _geo.height() > 0 else 600
+        self.setMinimumSize(_min_w, _min_h)
+        self.output_dir = _cartella_temp_output()
         
         # Struttura dati in memoria per il Costruttore Interattivo
         self.builder_data = {
@@ -479,16 +644,25 @@ class UIStrutture(QMainWindow):
         self._undo = []               # istantanee JSON per "Annulla ultima modifica"
         self._sel = None              # (categoria, indice) dell'elemento selezionato nel riepilogo (evidenziato in anteprima)
         self._run_id = 0              # ogni calcolo scrive in una cartella nuova: niente immagini vecchie dalla cache
+        self.run_dir = None
         self._current_json_path = None
-        _cand_json_dir = os.path.abspath(os.path.join(base_dir, "..", "JSON"))
-        if not os.path.isdir(_cand_json_dir):
-            _cand_json_dir = os.path.abspath(os.path.join(base_dir, "JSON"))
-        self._last_json_dir = _cand_json_dir if os.path.isdir(_cand_json_dir) else os.path.expanduser("~")
+        _cand_dirs = [
+            os.path.abspath(os.path.join(base_dir, "..", "JSON")),
+            os.path.abspath(os.path.join(base_dir, "JSON")),
+        ]
+        if _MEIPASS_DIR:
+            _cand_dirs.append(os.path.abspath(os.path.join(_MEIPASS_DIR, "JSON")))
+        self._last_json_dir = next((d for d in _cand_dirs if os.path.isdir(d)), os.path.expanduser("~"))
         
         self.setup_ui()
         self._collega_segnali_proprieta()
         self.setStyleSheet(self.get_stylesheet())
         QTimer.singleShot(80, self._avvia_prewarm_asincrono)
+
+    def closeEvent(self, event):
+        if getattr(self, "run_dir", None):
+            shutil.rmtree(self.run_dir, ignore_errors=True)
+        super().closeEvent(event)
 
     def _avvia_prewarm_asincrono(self):
         """Pre-carica in background (dopo la visualizzazione della finestra) i moduli pesanti."""
@@ -558,6 +732,12 @@ class UIStrutture(QMainWindow):
                 selection-color: #ffffff;
             }
             
+            /* Dialoghi, menu contestuali e tooltip sempre chiari anche con Windows 11 in Dark Mode */
+            QMessageBox, QDialog { background-color: #ffffff; color: #000000; }
+            QMenu { background-color: #ffffff; color: #000000; border: 1px solid #ced4da; }
+            QMenu::item:selected { background-color: #0d6efd; color: #ffffff; }
+            QToolTip { background-color: #ffffe1; color: #000000; border: 1px solid #ced4da; padding: 3px; }
+
             /* Stile Schede (Tab) */
             QTabBar::tab { background: #e9ecef; color: #000000; padding: 8px 15px; border-top-left-radius: 4px; border-top-right-radius: 4px;}
             QTabBar::tab:selected { background: #ffffff; font-weight: bold; color: #0d6efd; border-bottom: 2px solid #ffffff;}
@@ -575,7 +755,7 @@ class UIStrutture(QMainWindow):
         self.splitter = splitter
 
         left_panel = QWidget()
-        left_panel.setMinimumWidth(560)
+        left_panel.setMinimumWidth(self._min_left_w)
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 10, 0)
         
@@ -601,7 +781,7 @@ class UIStrutture(QMainWindow):
         riga_json_btn.addWidget(self.btn_load)
         riga_json_btn.addWidget(self.btn_save_json)
         self.text_json = QTextEdit()
-        self.text_json.setFont(QFont("Courier", 11))
+        self.text_json.setFont(QFont("Consolas" if sys.platform == "win32" else "Courier", 10 if sys.platform == "win32" else 11))
         self.text_json.textChanged.connect(self.aggiorna_anteprima_json)
         tab_json_layout.addLayout(riga_json_btn)
         tab_json_layout.addWidget(self.text_json)
@@ -639,7 +819,7 @@ class UIStrutture(QMainWindow):
         
         # --- SOSTITUISCI IL VECCHIO right_panel CON QUESTO ---
         right_panel = QWidget()
-        right_panel.setMinimumWidth(380)   # la figura resta sempre visibile, anche con il pannello dati molto largo
+        right_panel.setMinimumWidth(self._min_right_w)   # la figura resta sempre visibile, anche con il pannello dati molto largo
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(10, 0, 0, 0)
         
@@ -2603,13 +2783,18 @@ class UIStrutture(QMainWindow):
         self.canvas.draw()
 
     def esporta_pdf(self):
-        file_path, _ = QFileDialog.getSaveFileName(self, "Salva Report PDF", "Report_Struttura.pdf", "PDF Files (*.pdf)")
-        if not file_path: return
+        percorso_def = os.path.join(self._last_json_dir, "Report_Struttura.pdf")
+        file_path, _ = QFileDialog.getSaveFileName(self, "Salva Report PDF", percorso_def, "PDF Files (*.pdf)")
+        if not file_path:
+            return
+        if not file_path.lower().endswith(".pdf"):
+            file_path += ".pdf"
             
         try:
             from PyQt6.QtPrintSupport import QPrinter
             printer = QPrinter(QPrinter.PrinterMode.ScreenResolution)
             printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+            printer.setResolution(96)   # DPI fisso per impaginazione identica con scaling Windows 11 100%-175%
             printer.setOutputFileName(file_path)
             
             layout = QPageLayout()
@@ -2623,7 +2808,7 @@ class UIStrutture(QMainWindow):
             impagina_documento_pdf(temp_doc, printer)
             temp_doc.print(printer)
             
-            QMessageBox.information(self, "Successo", "Report esportato in PDF con successo!")
+            QMessageBox.information(self, "Successo", f"Report esportato in PDF con successo:\n{file_path}")
         except Exception as e:
             QMessageBox.critical(self, "Errore", f"Errore durante il salvataggio del PDF:\n{str(e)}")
 
@@ -2638,8 +2823,15 @@ def _gestore_eccezioni(tipo, valore, tb):
 
 
 if __name__ == "__main__":
+    _imposta_appid_windows()
+    if hasattr(Qt, "HighDpiScaleFactorRoundingPolicy") and hasattr(QApplication, "setHighDpiScaleFactorRoundingPolicy"):
+        QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     sys.excepthook = _gestore_eccezioni
     app = QApplication(sys.argv)
+    _configura_ambiente_windows(app)
+    _app_icon = _carica_icona_app()
+    if not _app_icon.isNull():
+        app.setWindowIcon(_app_icon)
     window = UIStrutture()
     window.show()
     sys.exit(app.exec())
